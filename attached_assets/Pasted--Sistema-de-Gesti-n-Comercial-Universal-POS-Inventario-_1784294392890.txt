@@ -1,0 +1,218 @@
+# Sistema de Gestión Comercial Universal (POS + Inventario)
+### Documento de diseño funcional — v1.0
+
+---
+
+## 0. Filosofía del producto
+
+Antes de entrar en pantallas, hay tres decisiones de diseño que van a condicionar todo lo demás y que conviene dejar explícitas:
+
+1. **Genérico, no vertical.** No hablamos de "productos de almacén" ni "libros" ni "repuestos": hablamos de **ítems** con nombre, código, precio y stock. Ninguna pantalla debe asumir un rubro. Esto se logra con nomenclatura neutra ("Producto", "Categoría" libre, sin campos obligatorios específicos de un rubro).
+2. **Local-first.** Todo vive en la máquina del comerciante. Cero dependencia de internet para operar, cero necesidad de que el usuario instale o entienda una base de datos. La app la trae empaquetada y punto.
+3. **Dos roles, una sola verdad.** Admin y Vendedor comparten la misma base de datos, pero ven interfaces distintas — no es la misma pantalla con botones ocultos, es literalmente un modo de uso distinto (esto importa para que un vendedor nunca "se tropiece" con una opción de admin).
+
+---
+
+## 1. Primer arranque (Onboarding)
+
+Cuando el ejecutable se abre por primera vez (no existe aún una base de datos local), aparece un asistente de configuración inicial, en pasos, que no se puede saltear:
+
+**Paso 1 — Bienvenida y explicación de datos locales**
+Un texto simple y honesto: *"Este sistema guarda toda tu información (productos, ventas, tickets) en esta computadora, en un archivo local. No necesitás internet ni instalar nada aparte. Vos decidís cuánto tiempo se conservan los comprobantes."* Esto evita el típico susto de "¿dónde están mis datos?" y posiciona la app como confiable desde el segundo uno.
+
+**Paso 2 — Datos de la empresa**
+- Nombre del negocio (obligatorio)
+- Logo: subir una imagen o dejar el ícono por defecto del sistema
+- Dirección, teléfono, RUC/CI o identificador fiscal, email — todos opcionales, se usan solo para imprimir en el encabezado del ticket
+- Moneda (símbolo/código) para que los montos se vean correctos sea cual sea el país
+
+**Paso 3 — Política de tickets**
+- Interruptor: *¿Este negocio va a emitir tickets impresos al cerrar una venta?* Sí / No
+- Si es "Sí": selección de impresora (se detectan automáticamente las impresoras instaladas en el sistema operativo, sean térmicas de 58/80mm, láser o de tinta) y tamaño de papel
+- Si es "No": la venta igual queda registrada en el sistema, solo que no se manda nada a imprimir. (Aun así, conviene dejar un botón "Reimprimir/Ver último ticket en pantalla" por si el cliente lo pide después)
+
+**Paso 4 — Retención de historial**
+- *"¿Cada cuántos días querés que se eliminen automáticamente los tickets/comprobantes antiguos?"* — opciones predefinidas (30/60/90/180 días, "nunca borrar") + opción personalizada
+- Aclaración importante: esto borra el **detalle** del ticket, pero los **totales agregados** (para reportes históricos de ventas) se conservan siempre, así el dueño nunca pierde su historia de facturación aunque libere espacio en disco
+
+**Paso 5 — Crear administrador**
+- Nombre del dueño/admin + contraseña. Esta es LA cuenta maestra.
+- Aquí también se puede crear el primer usuario/vendedor (opcional, se puede hacer después desde Configuración)
+
+**Paso 6 — Apariencia**
+- Selección de tema/color de fondo (varias paletas prearmadas: claro, oscuro, y 3-4 combinaciones de color), para que el dueño sienta que la herramienta es "suya"
+
+Al terminar estos 6 pasos, el sistema crea la base de datos local y entra directo al panel del Admin. Todo esto se puede volver a editar después desde **Configuración** (solo con contraseña de admin).
+
+---
+
+## 2. Roles y control de acceso
+
+### Pantalla de inicio de sesión
+Al abrir la app (después del primer arranque), se pide seleccionar usuario (lista de vendedores + admin) e ingresar contraseña. Simple, pensado para un mostrador donde varias personas rotan turno.
+
+### Rol Administrador / Dueño
+Acceso total:
+- Productos (alta, edición, borrado, activar/desactivar)
+- Configuración general (todo lo del onboarding, editable)
+- Gestión de usuarios/vendedores (crear, borrar, resetear contraseña)
+- Sección Ventas (ver, exportar, borrar — nunca editar)
+- Sección Cierres de Caja (ver cuadres)
+- También puede vender, si quiere operar la caja él mismo
+
+### Rol Vendedor / Empleado
+Acceso restringido, pensado para que no se pueda equivocar ni "tocar cosas que no debe":
+- Pantalla de venta (buscar, escanear, cobrar)
+- Devoluciones
+- Apertura y cierre de su propia caja
+- **No ve** precios de costo, no puede editar productos, no puede ver el historial de ventas de otros días, no entra a Configuración
+
+Este límite no es solo una cuestión de "permisos": es una decisión de diseño de confianza — el dueño necesita saber que, sin importar cuántos empleados pasen por el mostrador, los números y precios no se tocan sin su contraseña.
+
+---
+
+## 3. Sección Productos (solo Admin)
+
+Pantalla tipo tabla/listado con buscador arriba. Por cada producto:
+- Nombre
+- Código (de barras o interno; se puede escribir a mano o escanear con lectora)
+- Precio de venta
+- Costo (opcional, útil para calcular márgenes/ganancia — el vendedor nunca ve este campo)
+- Stock actual
+- Stock mínimo (umbral para disparar la alerta amarilla — configurable por producto, o un valor global por defecto)
+- Categoría (campo libre, para que cada rubro cree las suyas: "Bebidas", "Ferretería", "Tomos", lo que sea)
+- Estado: Activo / Inactivo (el checkbox "destildar" que mencionás)
+
+Acciones disponibles:
+- **Agregar** manualmente, o **escanear** con lector de código (el cursor cae directo en el campo "Código" y cualquier lectora USB/Bluetooth funciona porque estas lectoras se comportan como un teclado — no hace falta ningún driver especial, es compatibilidad universal por diseño)
+- **Editar** cualquier campo
+- **Eliminar** (borrado real, solo si el producto nunca tuvo ventas asociadas — si ya tiene historial, el sistema sugiere "Desactivar" en vez de borrar, para no romper reportes pasados)
+- **Activar/Desactivar** (el "destildar"): un producto inactivo no aparece en la pantalla de venta ni se puede escanear, pero conserva su historial. Ideal para productos de temporada o descontinuados temporalmente
+- **Importar/Exportar** lista de productos (Excel/CSV) — para cargar catálogos grandes de una sola vez, algo que cualquier rubro va a agradecer al empezar a usar el sistema
+
+---
+
+## 4. Pantalla de Venta (para Vendedor y Admin)
+
+Esta es la pantalla que más se usa, así que la velocidad manda. Diseño pensado para **no tocar el mouse**:
+
+- Campo de búsqueda siempre enfocado: escribís nombre o el lector escanea el código, y el producto aparece en el carrito
+- Si se escribe un nombre parcial, aparece una lista de coincidencias para elegir
+- Cantidad editable por ítem (se puede escribir directo o usar + / -)
+- Total en tiempo real, bien grande, visible desde lejos (pantalla de mostrador)
+
+### Atajos de teclado (F1–F11)
+Idea: cada tecla de función dispara una acción concreta, sin interferir entre sí ni con el tipeo normal (por eso van en la fila de F1-F12 y no en letras, que sí se usan para buscar por nombre):
+
+| Tecla | Acción |
+|---|---|
+| F1 | Nueva venta / limpiar carrito |
+| F2 | Foco en buscador de producto |
+| F3 | Editar cantidad del ítem seleccionado |
+| F4 | Aplicar descuento (si el admin lo habilitó para vendedores) |
+| F5 | Elegir método de pago |
+| F6 | Cobrar / finalizar venta |
+| F7 | Cancelar venta actual |
+| F8 | Suspender venta (guardar carrito para retomar después, útil si el cliente se va a buscar algo) |
+| F9 | Ir a Devoluciones |
+| F10 | Abrir cajón de dinero (si hay uno conectado a la impresora) |
+| F11 | Cerrar caja |
+
+Estos atajos se pueden reasignar desde Configuración por si a alguien no le calzan, pero vienen con esta convención por defecto.
+
+### Métodos de pago
+Selección simple: Efectivo, Tarjeta, Transferencia, Mixto (se puede dividir el monto entre dos o más métodos). Si es efectivo, calculadora de vuelto automática.
+
+### Emisión de ticket
+Al finalizar, según lo configurado: se imprime el ticket, o simplemente se registra la venta sin imprimir nada (pero queda un botón "Ver comprobante en pantalla" por si hace falta).
+
+---
+
+## 5. Devoluciones
+
+Acceso rápido desde F9 o una sección propia. Flujo:
+1. Buscar la venta original (por número de ticket, fecha, o buscando el producto vendido ese día)
+2. Seleccionar qué ítems se devuelven y la cantidad
+3. Motivo (campo simple: defectuoso, cambio de talle, error de cobro, etc. — lista corta + "otro")
+4. El stock del producto devuelto vuelve a sumarse automáticamente
+5. Se genera un comprobante de devolución, y queda marcado como tal en el PDF de ventas del día (para que el dueño lo distinga fácilmente de una venta normal)
+
+---
+
+## 6. Apertura y Cierre de Caja
+
+**Apertura (al empezar el turno):** el vendedor ingresa el monto de efectivo inicial ("fondo de caja"). Este paso es clave — sin un monto de partida conocido, ningún cierre puede cuadrar bien más adelante.
+
+**Cierre (al terminar el turno):**
+1. El sistema calcula lo esperado en caja: fondo inicial + ventas en efectivo − devoluciones en efectivo
+2. El vendedor cuenta el efectivo real y lo ingresa
+3. El sistema muestra la diferencia: cuadrado, faltante (con el monto exacto) o sobrante
+4. Se muestra también el resumen de ventas por método de pago (efectivo, tarjeta, transferencia)
+5. **Reporte de stock al cierre**, tal como lo pediste:
+   - 🔴 **Rojo**: productos agotados (stock = 0)
+   - 🟡 **Amarillo**: productos por debajo de su stock mínimo
+   - ⚪/🟢 **Verde o blanco**: todo lo demás, stock normal
+6. Este cierre completo queda guardado con fecha, hora y el nombre del vendedor que lo hizo
+
+---
+
+## 7. Sección Ventas (solo Admin — solo lectura)
+
+Listado de ventas organizadas por fecha. Por cada día (o venta individual, según cómo se quiera navegar):
+- Ver el PDF del resumen de ventas
+- Descargar
+- Borrar (si ya no lo necesita, respetando la política de retención configurada)
+- **No se puede editar nada** — esto es intencional, para que el historial de ventas sea siempre confiable y auditable
+
+Cada PDF incluye: detalle de ventas, devoluciones marcadas claramente, desglose por método de pago, y el vendedor responsable de cada operación.
+
+---
+
+## 8. Sección Cierres de Caja (solo Admin)
+
+Historial de todos los cierres realizados, cada uno mostrando: fecha, vendedor, fondo inicial, total esperado, total contado, diferencia (y si faltó o sobró dinero), y el detalle de stock (rojo/amarillo/verde) de ese momento. Esto le da al dueño una foto clara de cómo se manejó cada turno sin tener que estar presente.
+
+---
+
+## 9. Configuración (solo Admin, protegida por contraseña)
+
+Todo lo definido en el onboarding, pero editable en cualquier momento:
+- Datos de la empresa y logo
+- Activar/desactivar tickets, impresora
+- Días de retención de tickets
+- Gestión de usuarios (agregar/quitar vendedores, resetear contraseñas)
+- Tema visual / colores de fondo
+- Umbral de stock bajo (global, con posibilidad de override por producto)
+- Reasignar atajos de teclado
+- Copia de seguridad manual (exportar la base de datos completa a un archivo, para poder restaurarla si cambian de computadora o se rompe algo — esto es importante que lo agreguemos aunque no lo hayas pedido explícitamente: sin esto, un fallo de disco significa perder todo)
+
+---
+
+## 10. Base de datos y almacenamiento
+
+- Motor embebido (tipo SQLite), pero **invisible para el usuario** — nunca ve la palabra "base de datos" salvo en la explicación inicial
+- Un solo archivo/carpeta local, sin instalación de servicios externos
+- Purga automática programada según los días configurados, corriendo en segundo plano
+- Backup manual exportable (ver punto anterior) — vital como red de seguridad
+
+---
+
+## 11. Compatibilidad de hardware
+
+- **Lectores de código de barras**: cualquier modelo USB o Bluetooth que funcione en "modo teclado" (que es el estándar de facto de casi todos los lectores del mercado) funciona sin configuración adicional, porque el sistema simplemente escucha el campo de búsqueda/código como si fuera tipeo
+- **Impresoras**: térmicas (58mm/80mm, protocolo ESC/POS) para tickets rápidos, y cualquier impresora estándar del sistema operativo (láser, inkjet) para imprimir el PDF de resumen si se prefiere. La selección se hace una vez en Configuración y no se vuelve a tocar
+
+---
+
+## 12. Ideas adicionales que suman (aunque no las pediste explícitamente)
+
+- **Registro de auditoría**: quién hizo cada acción y cuándo (qué vendedor vendió qué, quién editó un producto) — le da tranquilidad al dueño sin necesidad de estar mirando por encima del hombro
+- **Producto más vendido / reporte simple de tendencias**: aunque sea básico, ayuda a decidir qué reponer primero
+- **Modo oscuro y claro**, además de las paletas de color, para comodidad visual en jornadas largas
+- **Multi-sucursal** (a futuro): la base está pensada para una sola caja/PC, pero el diseño de roles y reportes ya deja el camino abierto si el negocio crece
+- **Ticket con numeración correlativa**, para que cada comprobante sea único y rastreable, incluso si no se imprime en papel
+
+---
+
+### Cómo seguimos
+Este documento cubre la arquitectura funcional completa: roles, pantallas, flujos y reglas de negocio. El siguiente paso natural sería definir la estructura de datos (tablas: productos, ventas, detalle_venta, devoluciones, cierres_caja, usuarios, configuración) y recién ahí pasar a la implementación técnica (elegiríamos el stack: escritorio nativo, Electron, etc.) cuando quieras avanzar a esa etapa.

@@ -1,0 +1,222 @@
+# Especificación Técnica — Handoff para desarrollo
+### Sistema de Gestión Comercial Universal (POS + Inventario)
+
+Este documento complementa el diseño funcional (`Spec_App_Gestion_POS.md`) y traduce esa idea en una base técnica lista para que una IA de código empiece a construir.
+
+---
+
+## 1. Stack elegido
+
+- **Electron** (empaqueta la app de escritorio, un solo instalador para Windows/Mac/Linux)
+- **React + Tailwind CSS** (interfaz — permite un diseño profesional y con temas de color configurables)
+- **better-sqlite3** (base de datos local embebida, síncrona, sin servidor externo, sin que el usuario sepa que existe)
+- **electron-builder** (para generar el instalador final, listo para "un rato y ya se puede usar")
+- Impresión térmica: `node-thermal-printer` (ESC/POS) — impresión estándar: diálogo nativo de impresión de Electron/OS
+- PDF de ventas/cierres: `pdfkit` o `puppeteer` (renderizar HTML a PDF)
+
+---
+
+## 2. Estructura de carpetas sugerida
+
+```
+gestion-app/
+├── package.json
+├── electron/
+│   ├── main.js              # proceso principal de Electron
+│   ├── preload.js           # bridge seguro entre main y renderer
+│   ├── db/
+│   │   ├── database.js      # conexión a better-sqlite3
+│   │   ├── schema.sql       # creación de tablas (ver sección 3)
+│   │   └── migrations/      # cambios futuros de esquema
+│   ├── printing/
+│   │   ├── ticketPrinter.js
+│   │   └── pdfGenerator.js
+│   └── ipc/                 # handlers de comunicación (productos, ventas, cierres, etc.)
+├── src/                     # React (renderer)
+│   ├── App.jsx
+│   ├── screens/
+│   │   ├── Onboarding/
+│   │   ├── Login/
+│   │   ├── Venta/
+│   │   ├── Productos/
+│   │   ├── Devoluciones/
+│   │   ├── CierreCaja/
+│   │   ├── Ventas/           # historial (solo admin)
+│   │   ├── CierresHistorial/ # solo admin
+│   │   └── Configuracion/
+│   ├── components/
+│   ├── context/              # sesión de usuario, tema, config global
+│   └── hooks/                # ej. useBarcodeScanner, useKeyboardShortcuts
+└── assets/
+    └── logo-default.png
+```
+
+---
+
+## 3. Esquema de base de datos
+
+```sql
+-- Configuración general del negocio (una sola fila)
+CREATE TABLE configuracion (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  nombre_empresa TEXT NOT NULL,
+  logo_path TEXT,
+  direccion TEXT,
+  telefono TEXT,
+  identificador_fiscal TEXT,
+  email TEXT,
+  moneda TEXT DEFAULT 'Gs.',
+  emite_tickets INTEGER DEFAULT 1,        -- 0/1
+  impresora_seleccionada TEXT,
+  dias_retencion_tickets INTEGER DEFAULT 90, -- 0 = nunca borrar
+  tema_color TEXT DEFAULT 'default',
+  stock_bajo_umbral_global INTEGER DEFAULT 5,
+  fecha_instalacion TEXT
+);
+
+-- Usuarios (admin y vendedores)
+CREATE TABLE usuarios (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nombre TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  rol TEXT CHECK (rol IN ('admin','vendedor')) NOT NULL,
+  activo INTEGER DEFAULT 1,
+  creado_en TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Categorías (campo libre, sin rubro fijo)
+CREATE TABLE categorias (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nombre TEXT NOT NULL UNIQUE
+);
+
+-- Productos
+CREATE TABLE productos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  codigo TEXT UNIQUE,              -- código de barras o interno
+  nombre TEXT NOT NULL,
+  precio REAL NOT NULL,
+  costo REAL,                      -- opcional, no visible para vendedor
+  stock INTEGER NOT NULL DEFAULT 0,
+  stock_minimo INTEGER,            -- override del umbral global
+  categoria_id INTEGER REFERENCES categorias(id),
+  activo INTEGER DEFAULT 1,        -- el "destildar"
+  creado_en TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Aperturas de caja
+CREATE TABLE aperturas_caja (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  usuario_id INTEGER REFERENCES usuarios(id),
+  fondo_inicial REAL NOT NULL,
+  fecha_apertura TEXT DEFAULT CURRENT_TIMESTAMP,
+  cierre_id INTEGER REFERENCES cierres_caja(id) -- null hasta que se cierre
+);
+
+-- Ventas (cabecera)
+CREATE TABLE ventas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  numero_ticket INTEGER UNIQUE,     -- correlativo
+  usuario_id INTEGER REFERENCES usuarios(id),
+  apertura_caja_id INTEGER REFERENCES aperturas_caja(id),
+  total REAL NOT NULL,
+  metodo_pago TEXT,                 -- 'efectivo' | 'tarjeta' | 'transferencia' | 'mixto'
+  detalle_pago_mixto TEXT,          -- JSON si es mixto: {"efectivo":..,"tarjeta":..}
+  fecha TEXT DEFAULT CURRENT_TIMESTAMP,
+  anulada INTEGER DEFAULT 0
+);
+
+-- Detalle de cada venta (líneas)
+CREATE TABLE detalle_venta (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  venta_id INTEGER REFERENCES ventas(id),
+  producto_id INTEGER REFERENCES productos(id),
+  cantidad INTEGER NOT NULL,
+  precio_unitario REAL NOT NULL,   -- precio al momento de la venta (histórico)
+  subtotal REAL NOT NULL
+);
+
+-- Devoluciones
+CREATE TABLE devoluciones (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  venta_id INTEGER REFERENCES ventas(id),
+  usuario_id INTEGER REFERENCES usuarios(id),
+  motivo TEXT,
+  fecha TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE detalle_devolucion (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  devolucion_id INTEGER REFERENCES devoluciones(id),
+  producto_id INTEGER REFERENCES productos(id),
+  cantidad INTEGER NOT NULL
+);
+
+-- Cierres de caja
+CREATE TABLE cierres_caja (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  apertura_caja_id INTEGER REFERENCES aperturas_caja(id),
+  usuario_id INTEGER REFERENCES usuarios(id),
+  total_esperado REAL,
+  total_contado REAL,
+  diferencia REAL,               -- positivo = sobra, negativo = falta
+  fecha_cierre TEXT DEFAULT CURRENT_TIMESTAMP,
+  snapshot_stock TEXT            -- JSON con el estado rojo/amarillo/verde al momento del cierre
+);
+
+-- Auditoría (quién hizo qué)
+CREATE TABLE auditoria (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  usuario_id INTEGER REFERENCES usuarios(id),
+  accion TEXT,                   -- ej. 'edito_producto', 'creo_venta', 'elimino_ticket'
+  detalle TEXT,
+  fecha TEXT DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Notas de diseño del esquema:**
+- `precio_unitario` se guarda en `detalle_venta` (no se recalcula desde `productos`), para que si el precio cambia después, el historial de ventas viejas no se altere.
+- El borrado automático por retención de tickets debería operar sobre `ventas` + `detalle_venta` más antiguos al umbral, pero antes de borrar, generar/conservar un registro agregado (totales por día) en una tabla liviana tipo `resumen_diario` para no perder el histórico de facturación.
+- `activo` en productos es el campo que resuelve el "destildar" sin perder integridad referencial con ventas pasadas.
+
+---
+
+## 4. Reglas de negocio a implementar (resumen ejecutable)
+
+1. Un producto con ventas asociadas **no se borra**, se desactiva (`activo = 0`).
+2. La pantalla de venta solo lista/busca productos con `activo = 1`.
+3. `stock_minimo` de un producto, si es null, usa `stock_bajo_umbral_global` de `configuracion`.
+4. Al cerrar caja: `total_esperado = fondo_inicial + SUM(ventas efectivo) - SUM(devoluciones efectivo)` dentro del rango de la apertura activa.
+5. Un vendedor no puede ver `costo` de productos ni la sección `Ventas`/`CierresHistorial` de otros turnos.
+6. Cada acción sensible (editar producto, borrar ticket, cambiar config) escribe una fila en `auditoria`.
+7. El proceso de purga automática corre al iniciar la app (o con un scheduler diario) y respeta `dias_retencion_tickets`.
+
+---
+
+## 5. Prompt listo para pegarle a la otra IA
+
+```
+Quiero que construyas una aplicación de escritorio de gestión comercial (POS + inventario),
+usando Electron + React + Tailwind CSS + better-sqlite3, empaquetada con electron-builder
+para que se instale con un solo instalador en Windows.
+
+Te adjunto dos documentos:
+1) Spec_App_Gestion_POS.md — el diseño funcional completo (pantallas, roles, flujos)
+2) Especificacion_Tecnica_Handoff.md — el stack, el esquema SQL y las reglas de negocio
+
+Empezá por:
+1. Armar el esqueleto del proyecto Electron + React con la estructura de carpetas indicada
+2. Crear el schema.sql y la capa de acceso a datos (database.js) con better-sqlite3
+3. Implementar el flujo de Onboarding (primer arranque) tal como está descrito
+4. Implementar login con roles admin/vendedor
+5. Construir la pantalla de Venta con búsqueda por nombre/código y los atajos F1-F11 descritos
+
+Priorizá que la app arranque y sea usable de punta a punta (aunque sea con datos de prueba)
+antes de pulir detalles visuales. Usá los nombres de tablas y campos tal cual están en el
+esquema SQL para que todo quede consistente.
+```
+
+---
+
+### Siguiente paso natural
+Con estos dos documentos (funcional + técnico) ya hay suficiente para que una IA de código arranque sin ambigüedades. Lo único que quedaría a tu criterio antes de soltarlo es: confirmar el nombre final del proyecto y si querés que la primera versión incluya o no el punto "multi-sucursal" (yo lo dejaría afuera de la v1, es una idea para más adelante).
