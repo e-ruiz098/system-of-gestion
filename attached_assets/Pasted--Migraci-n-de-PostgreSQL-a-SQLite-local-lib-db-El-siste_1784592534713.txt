@@ -1,0 +1,197 @@
+# Migración de PostgreSQL a SQLite local (lib/db)
+
+El sistema quedó armado sobre Postgres remoto (Drizzle + `pg` + `DATABASE_URL`),
+lo cual rompe el requisito original de que todo funcione local, sin depender de
+internet ni de un servicio externo. Esta migración lo pasa a SQLite embebido
+(`better-sqlite3`), que es exactamente lo que definimos en la especificación técnica.
+
+## 1. Dependencias (`lib/db/package.json`)
+
+Quitar:
+```json
+"pg": "^8.22.0",
+"@types/pg": "^8.20.0"
+```
+
+Agregar:
+```json
+"better-sqlite3": "^11.3.0"
+```
+y en devDependencies:
+```json
+"@types/better-sqlite3": "^7.6.11"
+```
+
+## 2. Configuración de Drizzle Kit (`lib/db/drizzle.config.ts`)
+
+**Antes:**
+```typescript
+import { defineConfig } from "drizzle-kit";
+import path from "path";
+
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL, ensure the database is provisioned");
+}
+
+export default defineConfig({
+  schema: path.join(__dirname, "./src/schema/index.ts"),
+  dialect: "postgresql",
+  dbCredentials: {
+    url: process.env.DATABASE_URL,
+  },
+});
+```
+
+**Después:**
+```typescript
+import { defineConfig } from "drizzle-kit";
+import path from "path";
+
+export default defineConfig({
+  schema: path.join(__dirname, "./src/schema/index.ts"),
+  dialect: "sqlite",
+  dbCredentials: {
+    url: path.join(__dirname, "./data/local.db"),
+  },
+});
+```
+Ya no hace falta ninguna variable de entorno: la ruta del archivo queda fija
+dentro del propio proyecto (más adelante, al empaquetar con Electron, esta ruta
+se reemplaza por la carpeta `userData` del sistema operativo — eso lo ajustamos
+en la etapa de empaquetado, no ahora).
+
+## 3. Conexión a la base (`lib/db/src/index.ts`)
+
+**Antes:**
+```typescript
+import { drizzle } from "drizzle-orm/node-postgres";
+import pg from "pg";
+import * as schema from "./schema";
+
+const { Pool } = pg;
+
+if (!process.env.DATABASE_URL) {
+  throw new Error(
+    "DATABASE_URL must be set. Did you forget to provision a database?",
+  );
+}
+
+export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+export const db = drizzle(pool, { schema });
+
+export * from "./schema";
+```
+
+**Después:**
+```typescript
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import Database from "better-sqlite3";
+import path from "path";
+import * as schema from "./schema";
+
+const sqlite = new Database(path.join(__dirname, "./data/local.db"));
+sqlite.pragma("journal_mode = WAL"); // mejor rendimiento y evita bloqueos
+
+export const db = drizzle(sqlite, { schema });
+
+export * from "./schema";
+```
+
+## 4. Regla de conversión para cada archivo de esquema
+
+Aplicar esta tabla a **todos** los archivos en `lib/db/src/schema/`
+(`configuracion.ts`, `usuarios.ts`, `categorias.ts`, `productos.ts`, `caja.ts`,
+`ventas.ts`, `devoluciones.ts`, `auditoria.ts`):
+
+| Postgres (`drizzle-orm/pg-core`) | SQLite (`drizzle-orm/sqlite-core`) |
+|---|---|
+| `pgTable(...)` | `sqliteTable(...)` |
+| `serial("id").primaryKey()` | `integer("id").primaryKey({ autoIncrement: true })` |
+| `text(...)` | `text(...)` (igual) |
+| `real(...)` | `real(...)` (igual) |
+| `integer(...)` | `integer(...)` (igual) |
+| `boolean("activo")` | `integer("activo", { mode: "boolean" })` |
+| `timestamp("creado_en", { withTimezone: true })` | `integer("creado_en", { mode: "timestamp" })` |
+| `.references(() => tabla.columna)` | igual, sin cambios |
+| `.notNull()`, `.default(...)`, `.unique()` | iguales, sin cambios |
+
+## 5. Ejemplo completo aplicado (`productos.ts`)
+
+**Antes:**
+```typescript
+import { pgTable, serial, text, real, integer, boolean, timestamp } from "drizzle-orm/pg-core";
+import { categoriasTable } from "./categorias";
+import { createInsertSchema } from "drizzle-zod";
+import { z } from "zod/v4";
+
+export const productosTable = pgTable("productos", {
+  id: serial("id").primaryKey(),
+  codigo: text("codigo").unique(),
+  nombre: text("nombre").notNull(),
+  precio: real("precio").notNull(),
+  costo: real("costo"),
+  stock: real("stock").notNull().default(0),
+  stock_minimo: real("stock_minimo"),
+  unidad_tipo: text("unidad_tipo").notNull().default("unidad"),
+  categoria_id: integer("categoria_id").references(() => categoriasTable.id),
+  activo: boolean("activo").notNull().default(true),
+  creado_en: timestamp("creado_en", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const insertProductoSchema = createInsertSchema(productosTable).omit({ id: true, creado_en: true });
+export type InsertProducto = z.infer<typeof insertProductoSchema>;
+export type Producto = typeof productosTable.$inferSelect;
+```
+
+**Después:**
+```typescript
+import { sqliteTable, integer, text, real } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+import { categoriasTable } from "./categorias";
+import { createInsertSchema } from "drizzle-zod";
+import { z } from "zod/v4";
+
+export const productosTable = sqliteTable("productos", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  codigo: text("codigo").unique(),
+  nombre: text("nombre").notNull(),
+  precio: real("precio").notNull(),
+  costo: real("costo"),
+  stock: real("stock").notNull().default(0),
+  stock_minimo: real("stock_minimo"),
+  unidad_tipo: text("unidad_tipo").notNull().default("unidad"),
+  categoria_id: integer("categoria_id").references(() => categoriasTable.id),
+  activo: integer("activo", { mode: "boolean" }).notNull().default(true),
+  creado_en: integer("creado_en", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
+});
+
+export const insertProductoSchema = createInsertSchema(productosTable).omit({ id: true, creado_en: true });
+export type InsertProducto = z.infer<typeof insertProductoSchema>;
+export type Producto = typeof productosTable.$inferSelect;
+```
+
+Notar el cambio de `.defaultNow()` (propio de Postgres) por
+`.default(sql\`(unixepoch())\`)`, que es el equivalente en SQLite para
+"fecha/hora actual" — y por eso ahora también se importa `sql` de `drizzle-orm`.
+
+## 6. api-server: revisar uso de `pool`
+
+Buscar en `artifacts/api-server/src` cualquier importación de `pool` desde
+`@workspace/db` (el `Pool` de `pg` que se exportaba antes). Como en la nueva
+versión de `index.ts` ya no se exporta `pool`, cualquier archivo que lo use
+directamente (en vez de usar `db`) va a fallar y hay que ajustarlo para que
+use `db` (la instancia de Drizzle) en su lugar.
+
+## 7. Generar la base de datos
+
+Después de aplicar todos los cambios, desde `lib/db` correr:
+```
+pnpm run push
+```
+Esto crea el archivo `lib/db/data/local.db` con todas las tablas ya definidas,
+listo para que `api-server` arranque sin pedir ninguna variable de entorno.
+
+## 8. Backup (Configuración > Respaldo)
+Como ahora la base es un único archivo físico (`local.db`), la función de
+"Descargar Respaldo (.sqlite)" que ya está en Configuración pasa a ser trivial:
+copiar ese archivo tal cual para descargarlo, y sobrescribirlo para restaurarlo.
