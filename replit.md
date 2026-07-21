@@ -1,45 +1,47 @@
-# [Project name]
+# Sistema de Gestión Comercial (SGC) — POS + Inventario
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
-
-## Run & Operate
-
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+A full-stack commercial management system (point-of-sale + inventory) for small businesses. Built as a pnpm monorepo with a React frontend and an Express API backend.
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- **Frontend**: React 19 + Vite + Tailwind CSS + shadcn/ui (`artifacts/pos-app`)
+- **API**: Express 5 + Pino logger + express-session (`artifacts/api-server`)
+- **Database**: PostgreSQL via Drizzle ORM (`lib/db`)
+- **Shared libs**: OpenAPI spec (`lib/api-spec`), Zod schemas (`lib/api-zod`), React Query client (`lib/api-client-react`)
 
-## Where things live
+## Running the project
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+Two workflows run concurrently:
 
-## Architecture decisions
+| Workflow | Command | Description |
+|---|---|---|
+| `artifacts/pos-app: web` | `pnpm --filter @workspace/pos-app run dev` | Vite dev server for the React frontend |
+| `artifacts/api-server: API Server` | `pnpm --filter @workspace/api-server run dev` | Builds and starts the Express API |
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+## Environment variables / secrets
 
-## Product
+| Name | Required | Notes |
+|---|---|---|
+| `DATABASE_URL` | Yes | PostgreSQL connection string — already provisioned |
+| `SESSION_SECRET` | Yes | Express session secret — already set as a Replit secret |
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+## Database
+
+Managed with Drizzle ORM. To apply schema changes to the database:
+
+```bash
+pnpm --filter @workspace/db run push
+```
+
+## Features
+
+- **Terminal POS**: product search by name/barcode, cart management, multi-payment methods (cash, card, transfer, mixed)
+- **Inventory**: product catalog with categories, stock levels, low-stock alerts
+- **Cash register**: open/close shifts, cash count reconciliation, audit trail
+- **Sales history**: full transaction log with return/refund support
+- **User roles**: Admin (full access) and Cajero/Vendedor (restricted to POS + cash register)
+- **Configuration**: business info, receipt printer, currency format, color themes
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
-
-## Gotchas
-
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+<!-- Add user preferences here as they are stated -->
