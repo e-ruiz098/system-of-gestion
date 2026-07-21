@@ -1,0 +1,1 @@
+- [SQLite DB path in esbuild bundle](sqlite-bundling-path.md) — use SQLITE_DB_PATH env var; __dirname breaks when lib/db is inlined by esbuild into api-server dist.

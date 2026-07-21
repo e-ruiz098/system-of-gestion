@@ -1,20 +1,21 @@
-import { pgTable, serial, integer, text, timestamp } from "drizzle-orm/pg-core";
+import { sqliteTable, integer, text } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 import { ventasTable } from "./ventas";
 import { usuariosTable } from "./usuarios";
 import { productosTable } from "./productos";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
-export const devolucionesTable = pgTable("devoluciones", {
-  id: serial("id").primaryKey(),
+export const devolucionesTable = sqliteTable("devoluciones", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
   venta_id: integer("venta_id").references(() => ventasTable.id),
   usuario_id: integer("usuario_id").references(() => usuariosTable.id),
   motivo: text("motivo"),
-  fecha: timestamp("fecha", { withTimezone: true }).notNull().defaultNow(),
+  fecha: integer("fecha", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
 });
 
-export const detalleDevolucionTable = pgTable("detalle_devolucion", {
-  id: serial("id").primaryKey(),
+export const detalleDevolucionTable = sqliteTable("detalle_devolucion", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
   devolucion_id: integer("devolucion_id").references(() => devolucionesTable.id),
   producto_id: integer("producto_id").references(() => productosTable.id),
   cantidad: integer("cantidad").notNull(),

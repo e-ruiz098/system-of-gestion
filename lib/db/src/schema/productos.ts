@@ -1,10 +1,11 @@
-import { pgTable, serial, text, real, integer, boolean, timestamp } from "drizzle-orm/pg-core";
+import { sqliteTable, integer, text, real } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 import { categoriasTable } from "./categorias";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
-export const productosTable = pgTable("productos", {
-  id: serial("id").primaryKey(),
+export const productosTable = sqliteTable("productos", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
   codigo: text("codigo").unique(),
   nombre: text("nombre").notNull(),
   precio: real("precio").notNull(),
@@ -13,8 +14,8 @@ export const productosTable = pgTable("productos", {
   stock_minimo: real("stock_minimo"),
   unidad_tipo: text("unidad_tipo").notNull().default("unidad"),
   categoria_id: integer("categoria_id").references(() => categoriasTable.id),
-  activo: boolean("activo").notNull().default(true),
-  creado_en: timestamp("creado_en", { withTimezone: true }).notNull().defaultNow(),
+  activo: integer("activo", { mode: "boolean" }).notNull().default(true),
+  creado_en: integer("creado_en", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
 });
 
 export const insertProductoSchema = createInsertSchema(productosTable).omit({ id: true, creado_en: true });

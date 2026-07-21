@@ -27,11 +27,15 @@ Two workflows run concurrently:
 
 ## Database
 
-Managed with Drizzle ORM. To apply schema changes to the database:
+Uses **SQLite** via `better-sqlite3` (local file, no external service required). The database file lives at `lib/db/data/local.db`.
+
+Managed with Drizzle ORM. To apply schema changes:
 
 ```bash
 pnpm --filter @workspace/db run push
 ```
+
+The API server dev script sets `SQLITE_DB_PATH=/home/runner/workspace/lib/db/data/local.db` so the bundled output resolves the file correctly regardless of `__dirname` in the esbuild bundle.
 
 ## Features
 
