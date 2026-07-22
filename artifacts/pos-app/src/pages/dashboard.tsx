@@ -6,14 +6,14 @@ import { DollarSign, ShoppingCart, Package, AlertTriangle, ArrowRight } from 'lu
 import { Link } from 'wouter';
 import { format, parseISO } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { useCurrency } from '@/hooks/use-currency';
 
 export default function Dashboard() {
   const { data: dashboard, isLoading: isDashboardLoading } = useGetDashboard();
   const { data: ventasDia, isLoading: isVentasLoading } = useGetVentasPorDia();
   const { data: topProductos, isLoading: isTopLoading } = useGetProductosTop();
   const { data: stockAlerta, isLoading: isStockLoading } = useGetStockAlerta();
-
-  const formatCurrency = (val: number) => new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(val);
+  const { formatMoney, moneda } = useCurrency();
 
   return (
     <div className="flex flex-col h-full overflow-y-auto bg-muted/10 p-6 space-y-6">
@@ -41,7 +41,7 @@ export default function Dashboard() {
             <DollarSign className="w-4 h-4 text-emerald-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatCurrency(dashboard?.ingresos_hoy || 0)}</div>
+            <div className="text-2xl font-bold">{formatMoney(dashboard?.ingresos_hoy || 0)}</div>
             <p className="text-xs text-muted-foreground mt-1">
               Total recaudado
             </p>
@@ -95,7 +95,7 @@ export default function Dashboard() {
                       dy={10}
                     />
                     <YAxis 
-                      tickFormatter={(val) => `$${val/1000}k`}
+                      tickFormatter={(val) => `${moneda}${val/1000}k`}
                       stroke="hsl(var(--muted-foreground))"
                       fontSize={12}
                       tickLine={false}
@@ -105,7 +105,7 @@ export default function Dashboard() {
                     <Tooltip 
                       cursor={{fill: 'hsl(var(--muted))'}}
                       contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', color: 'hsl(var(--popover-foreground))', borderRadius: 'var(--radius)' }}
-                      formatter={(value: number) => [formatCurrency(value), 'Ingresos']}
+                      formatter={(value: number) => [formatMoney(value), 'Ingresos']}
                       labelFormatter={(label) => format(parseISO(label), 'dd MMMM yyyy', {locale: es})}
                     />
                     <Bar dataKey="ingresos" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
@@ -139,7 +139,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                     <div className="font-medium text-sm">
-                      {formatCurrency(prod.ingresos)}
+                      {formatMoney(prod.ingresos)}
                     </div>
                   </div>
                 ))}

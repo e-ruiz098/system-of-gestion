@@ -22,7 +22,7 @@ export const detalleVentaTable = sqliteTable("detalle_venta", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   venta_id: integer("venta_id").references(() => ventasTable.id),
   producto_id: integer("producto_id").references(() => productosTable.id),
-  cantidad: integer("cantidad").notNull(),
+  cantidad: real("cantidad").notNull(),
   precio_unitario: real("precio_unitario").notNull(),
   subtotal: real("subtotal").notNull(),
 });

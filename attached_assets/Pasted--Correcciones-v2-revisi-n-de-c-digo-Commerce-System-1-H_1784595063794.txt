@@ -1,0 +1,47 @@
+# Correcciones v2 — revisión de código (Commerce-System)
+
+## 1. Historial de Ventas: el botón "Ver detalle" no hace nada
+El ícono de ver detalle en la tabla de Historial de Ventas está sin ninguna acción
+conectada. Hay que implementarlo: al presionarlo debe abrir un modal o vista con
+el detalle completo de esa venta (productos, cantidades, precio unitario, subtotal,
+método de pago y si tuvo alguna devolución asociada).
+
+## 2. Formato de moneda inconsistente entre pantallas
+El hook centralizado de moneda (el que respeta el símbolo configurado y el
+interruptor de mostrar/ocultar decimales) está bien aplicado en Productos,
+Terminal POS, Devoluciones y Cierre de Caja. Pero el Dashboard, la pantalla de
+Cierres (historial) y el Historial de Ventas tienen su propio formato de moneda
+armado por separado, fijo en pesos argentinos con 2 decimales siempre, ignorando
+la configuración real del negocio. Hay que unificar: esas tres pantallas deben
+usar el mismo hook centralizado que ya usan las demás, para que el formato de
+moneda sea consistente en toda la aplicación.
+
+## 3. Cantidad decimal para productos por Kg no soportada en el esquema
+El formulario de venta ya permite cargar cantidades decimales (0.5, 1.25, etc.)
+para productos marcados como tipo "Kg". Sin embargo, el campo de cantidad en el
+detalle de venta y en el detalle de devolución sigue definido como un número
+entero en el esquema de la base de datos. Hay que cambiar ese campo a un tipo
+numérico que acepte decimales, para que vender por peso funcione de punta a
+punta sin que el backend rechace o trunque el valor.
+
+## 4. Crítico — el frontend nunca sabe a qué dirección del backend llamar
+El backend y el frontend corren como dos procesos independientes, cada uno en
+su propio puerto. El cliente que arma las peticiones nunca configura una URL
+base hacia el servidor del backend, y la configuración de Vite tampoco redirige
+las peticiones que empiezan con "/api" hacia el puerto del backend. Esto
+probablemente pasaba desapercibido dentro del entorno de Replit porque ahí todo
+quedaba expuesto bajo un mismo dominio, pero al correr esto como dos procesos
+separados en una computadora normal, ninguna petición al backend va a llegar a
+destino. Hay que resolver esto de forma que funcione tanto en desarrollo local
+como en producción: la opción más simple es que, durante desarrollo, el
+servidor de Vite redirija automáticamente cualquier petición que empiece con
+"/api" hacia el puerto donde corre el backend.
+
+## 5. Variables de entorno obligatorias sin valores por defecto
+Tanto el backend como el frontend fallan al arrancar si no encuentran ciertas
+variables de entorno (una clave de sesión para el backend, y el puerto más una
+ruta base para el frontend), y no existe ningún archivo de ejemplo que indique
+qué valores usar. Hay que agregar un archivo de ejemplo de variables de entorno
+en cada uno de los dos paquetes (backend y frontend), con valores razonables
+para desarrollo local, para que cualquiera que baje el proyecto sepa
+exactamente qué configurar antes de levantarlo.

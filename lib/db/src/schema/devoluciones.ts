@@ -1,4 +1,4 @@
-import { sqliteTable, integer, text } from "drizzle-orm/sqlite-core";
+import { sqliteTable, integer, real, text } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 import { ventasTable } from "./ventas";
 import { usuariosTable } from "./usuarios";
@@ -18,7 +18,7 @@ export const detalleDevolucionTable = sqliteTable("detalle_devolucion", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   devolucion_id: integer("devolucion_id").references(() => devolucionesTable.id),
   producto_id: integer("producto_id").references(() => productosTable.id),
-  cantidad: integer("cantidad").notNull(),
+  cantidad: real("cantidad").notNull(),
 });
 
 export const insertDevolucionSchema = createInsertSchema(devolucionesTable).omit({ id: true, fecha: true });

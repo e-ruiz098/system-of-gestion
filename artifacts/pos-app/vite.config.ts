@@ -27,6 +27,9 @@ if (!basePath) {
   );
 }
 
+// Optional: set API_PORT to forward /api/* requests to the backend during dev.
+const apiPort = process.env.API_PORT ? Number(process.env.API_PORT) : null;
+
 export default defineConfig({
   base: basePath,
   plugins: [
@@ -72,6 +75,16 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    ...(apiPort
+      ? {
+          proxy: {
+            '/api': {
+              target: `http://localhost:${apiPort}`,
+              changeOrigin: true,
+            },
+          },
+        }
+      : {}),
   },
   preview: {
     port,
