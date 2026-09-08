@@ -1,13 +1,9 @@
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import Database from "better-sqlite3";
+import { drizzle } from "drizzle-orm/libsql";
+import { createClient } from "@libsql/client/sqlite3";
 import path from "path";
 import { mkdirSync, existsSync } from "fs";
 import * as schema from "./schema";
 
-// When bundled by esbuild, __dirname becomes the dist/ directory, not lib/db/.
-// Use SQLITE_DB_PATH env var (set by the api-server dev script) so the path
-// always resolves correctly regardless of bundle context.
-// Drizzle-kit commands (push) run directly in lib/db/ where __dirname is fine.
 const DB_PATH =
   process.env["SQLITE_DB_PATH"] ??
   path.join(__dirname, "../data/local.db");
@@ -17,9 +13,13 @@ if (!existsSync(DB_DIR)) {
   mkdirSync(DB_DIR, { recursive: true });
 }
 
-const sqlite = new Database(DB_PATH);
-sqlite.pragma("journal_mode = WAL"); // mejor rendimiento y evita bloqueos
+const absolutePath = path.resolve(DB_PATH);
+const fileUrl = absolutePath.startsWith("file:") ? absolutePath : `file:${absolutePath}`;
 
-export const db = drizzle(sqlite, { schema });
+const client = createClient({
+  url: fileUrl,
+});
+
+export const db = drizzle(client, { schema });
 
 export * from "./schema";

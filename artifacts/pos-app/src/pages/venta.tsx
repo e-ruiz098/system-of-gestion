@@ -132,7 +132,7 @@ export default function Venta() {
       precio_unitario: item.precio, subtotal: item.subtotal
     }));
     createVentaMutation.mutate({
-      data: { apertura_caja_id: caja.apertura.id, total: cartTotal, metodo_pago: paymentMethod, detalle }
+      data: { apertura_caja_id: (caja as any)?.apertura?.id ?? (caja as any)?.id, total: cartTotal, metodo_pago: paymentMethod, detalle }
     }, {
       onSuccess: (data) => {
         setLastTicket(data.numero_ticket);
@@ -146,7 +146,12 @@ export default function Venta() {
     });
   };
 
-  const filteredProductos = productos?.filter(p => (p as any).stock > 0 || true) ?? [];
+  // CORRECCIÓN SEGUARA CONTRA TYPE ERROR:
+  const listaProductos = Array.isArray(productos) 
+    ? productos 
+    : (productos as any)?.data || (productos as any)?.productos || [];
+
+  const filteredProductos: Producto[] = listaProductos.filter((p: any) => (p as any).stock > 0 || true);
 
   return (
     <div className="flex h-full bg-background overflow-hidden relative">

@@ -81,7 +81,7 @@ export function CajeroShell({ children }: { children: React.ReactNode }) {
         <div className="p-3 border-t border-border shrink-0 space-y-2">
           <div className="flex items-center px-2 py-1">
             <div className="w-8 h-8 rounded-full bg-primary/20 text-primary flex items-center justify-center font-bold text-sm uppercase mr-3 shrink-0">
-              {user?.nombre.charAt(0)}
+              {user?.nombre?.charAt(0)}
             </div>
             <div className="overflow-hidden flex-1">
               <p className="text-sm font-semibold text-sidebar-foreground truncate">{user?.nombre}</p>
