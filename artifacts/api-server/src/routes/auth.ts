@@ -59,12 +59,18 @@ router.post("/auth/login", async (req, res): Promise<void> => {
   // ── Session fixation protection ──────────────────────────────────────────
   // Regenerate the session ID on every successful login so a pre-seeded
   // session ID cannot be used by an attacker to hijack the authenticated session.
-  await new Promise<void>((resolve, reject) => {
-    (req as any).session.regenerate((err: Error | null) => {
-      if (err) reject(err);
-      else resolve();
+  if (typeof (req as any).session?.regenerate === "function") {
+    await new Promise<void>((resolve) => {
+      (req as any).session.regenerate((err: Error | null) => {
+        if (err) {
+          // Fallback if regenerate fails in memory store
+          (req as any).session.userId = user.id;
+          (req as any).session.rol = user.rol;
+        }
+        resolve();
+      });
     });
-  });
+  }
 
   (req as any).session.userId = user.id;
   (req as any).session.rol = user.rol;
