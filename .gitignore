@@ -47,3 +47,12 @@ Thumbs.db
 # Caché y estado local del entorno de desarrollo
 .cache/
 .local/
+
+# Variables de entorno y datos locales (no subir)
+.env
+**/.env
+lib/db/data/
+backups/
+*.db
+*.db.*
+*.bak*
