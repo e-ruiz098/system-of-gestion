@@ -111,7 +111,8 @@ export function useBarcodeScanner(options: UseBarcodeScannerOptions = {}) {
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault(); // Always prevent premature form submission or page reload
-      const trimmed = barcode.trim();
+      const currentValue = e.currentTarget.value || barcode;
+      const trimmed = cleanBarcode(currentValue);
       if (trimmed) {
         if (onScan) {
           onScan(trimmed);

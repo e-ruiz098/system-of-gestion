@@ -44,6 +44,31 @@ export default function Configuracion() {
   const [showNewUser, setShowNewUser] = useState(false);
   const [newUserData, setNewUserData] = useState({ nombre: '', password: '', rol: 'vendedor' });
 
+  // Last scan activity state for Barcode Reader diagnostic
+  const [lastScanText, setLastScanText] = useState<string>('Sin actividad registrada');
+
+  useEffect(() => {
+    try {
+      const tsStr = localStorage.getItem('sgc_last_scan_time');
+      if (tsStr) {
+        const ts = parseInt(tsStr, 10);
+        if (!isNaN(ts)) {
+          const diffMs = Date.now() - ts;
+          const diffSec = Math.floor(diffMs / 1000);
+          if (diffSec < 60) {
+            setLastScanText(`Último escaneo recibido hace ${diffSec} seg`);
+          } else if (diffSec < 3600) {
+            const min = Math.floor(diffSec / 60);
+            setLastScanText(`Último escaneo recibido hace ${min} min`);
+          } else {
+            const hrs = Math.floor(diffSec / 3600);
+            setLastScanText(`Último escaneo recibido hace ${hrs} hora(s)`);
+          }
+        }
+      }
+    } catch (_) {}
+  }, []);
+
   useEffect(() => {
     if (config) {
       setEmpresa({
@@ -294,14 +319,14 @@ export default function Configuracion() {
             </Card>
           </TabsContent>
 
-          {/* ─── DISPOSITIVOS ────────────────────────────────── */}
+          {/* ─── DISPOSITIVOS (Sin datos inventados / Sin falsos conectados) ─── */}
           <TabsContent value="dispositivos" className="m-0 pt-5 space-y-4">
             <div className="max-w-2xl p-4 rounded-lg border border-border bg-card/60 flex items-center justify-between gap-3">
               <div className="flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5 text-emerald-500" />
+                <ShieldCheck className="w-5 h-5 text-primary" />
                 <div>
-                  <h4 className="text-sm font-bold">Estado de Hardware POS</h4>
-                  <p className="text-xs text-muted-foreground">Diagnóstico honesto en tiempo real según capacidades de la plataforma</p>
+                  <h4 className="text-sm font-bold">Información Real de Periféricos</h4>
+                  <p className="text-xs text-muted-foreground">Información objetiva verificable desde el navegador / cliente</p>
                 </div>
               </div>
             </div>
@@ -313,20 +338,16 @@ export default function Configuracion() {
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Printer className="w-5 h-5 text-primary" /> Impresora de Tickets
                   </CardTitle>
-                  <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 font-bold gap-1">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    ● Conectada (Sistema SO)
-                  </Badge>
                 </div>
               </CardHeader>
               <CardContent className="space-y-2 text-xs">
-                <div className="grid grid-cols-2 gap-2 p-3 rounded bg-muted/40 font-mono">
-                  <div><span className="text-muted-foreground">Estado:</span> <strong className="text-foreground">Lista / Predeterminada</strong></div>
-                  <div><span className="text-muted-foreground">Tipo de canal:</span> <strong className="text-foreground">Impresión Nativa SO</strong></div>
-                  <div className="col-span-2"><span className="text-muted-foreground">Identificación:</span> <span className="text-muted-foreground">Marca/modelo gestionados por el spooler de impresión del SO</span></div>
+                <div className="p-3 rounded bg-muted/40 font-mono space-y-1">
+                  <div><span className="text-muted-foreground">Método de impresión:</span> <strong className="text-foreground">Spooler / Diálogo del Sistema Operativo</strong></div>
+                  <div><span className="text-muted-foreground">Estado real:</span> <span className="text-muted-foreground">Estado no detectado (el navegador no informa marca ni modelo)</span></div>
+                  <div><span className="text-muted-foreground">Identificación:</span> <span className="text-muted-foreground">Identificación no disponible</span></div>
                 </div>
                 <p className="text-muted-foreground text-[11px] leading-relaxed">
-                  Al confirmar una venta con tickets habilitados, la aplicación invoca el subsistema de impresión predeterminado del sistema operativo.
+                  Impresión mediante el diálogo/spooler del sistema operativo (el navegador no informa marca ni modelo).
                 </p>
               </CardContent>
             </Card>
@@ -338,20 +359,16 @@ export default function Configuracion() {
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Barcode className="w-5 h-5 text-primary" /> Lector de Código de Barras
                   </CardTitle>
-                  <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 font-bold gap-1">
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                    ● Conectado (HID USB)
-                  </Badge>
                 </div>
               </CardHeader>
               <CardContent className="space-y-2 text-xs">
-                <div className="grid grid-cols-2 gap-2 p-3 rounded bg-muted/40 font-mono">
-                  <div><span className="text-muted-foreground">Estado:</span> <strong className="text-foreground">Escucha activa</strong></div>
-                  <div><span className="text-muted-foreground">Tipo de canal:</span> <strong className="text-foreground">USB Keyboard Wedge (HID)</strong></div>
-                  <div className="col-span-2"><span className="text-muted-foreground">Identificación:</span> <span className="text-muted-foreground">Dispositivo de entrada estándar (detalles de hardware no expuestos por seguridad)</span></div>
+                <div className="p-3 rounded bg-muted/40 font-mono space-y-1">
+                  <div><span className="text-muted-foreground">Tipo de canal:</span> <strong className="text-foreground">Entrada de Teclado (USB Keyboard Wedge)</strong></div>
+                  <div><span className="text-muted-foreground">Actividad de escaneo:</span> <strong className="text-foreground">{lastScanText}</strong></div>
+                  <div><span className="text-muted-foreground">Identificación:</span> <span className="text-muted-foreground">Identificación no disponible</span></div>
                 </div>
                 <p className="text-muted-foreground text-[11px] leading-relaxed">
-                  Cualquier escáner de código de barras USB funciona automáticamente sin drivers adicionales. El sistema detecta automáticamente la ráfaga rápida de caracteres.
+                  Captura de caracteres en ráfaga (&lt; 35ms) o sufijo Enter enviado por lectores USB estándar.
                 </p>
               </CardContent>
             </Card>
@@ -363,20 +380,20 @@ export default function Configuracion() {
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Banknote className="w-5 h-5 text-primary" /> Cajón de Dinero
                   </CardTitle>
-                  <Badge variant="outline" className={activaCajon ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 font-bold" : "bg-muted text-muted-foreground"}>
-                    {activaCajon ? "● Habilitado" : "○ Deshabilitado"}
+                  <Badge variant="outline" className={activaCajon ? "bg-primary/10 text-primary border-primary/20 font-bold" : "bg-muted text-muted-foreground"}>
+                    {activaCajon ? "Apertura habilitada" : "Apertura deshabilitada"}
                   </Badge>
                 </div>
                 <CardDescription className="text-xs">
-                  Configura la apertura automática del cajón de efectivo mediante señal de pulso
+                  Configuración de envío de pulso al imprimir
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between p-3 border rounded-lg">
                   <div className="space-y-0.5 flex-1 pr-4">
-                    <Label className="text-sm font-semibold">¿Cajón de dinero conectado?</Label>
+                    <Label className="text-sm font-semibold">¿Disparar pulso al imprimir ticket?</Label>
                     <p className="text-xs text-muted-foreground">
-                      Activa la apertura automática del cajón al finalizar ventas en efectivo.
+                      Envía orden de apertura a través de la impresora térmica (cable RJ11).
                     </p>
                   </div>
                   <Switch
@@ -387,7 +404,7 @@ export default function Configuracion() {
                         { data: { activa_cajon: v } as any },
                         {
                           onSuccess: () => {
-                            toast({ title: v ? "Cajón de dinero activado" : "Cajón de dinero desactivado" });
+                            toast({ title: v ? "Apertura de cajón habilitada" : "Apertura de cajón deshabilitada" });
                             queryClient.invalidateQueries({ queryKey: ['/api/config'] });
                           },
                         }
@@ -395,9 +412,9 @@ export default function Configuracion() {
                     }}
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-2 p-3 rounded bg-muted/40 text-xs font-mono">
-                  <div><span className="text-muted-foreground">Estado:</span> <strong className="text-foreground">{activaCajon ? 'Pulso Activo' : 'Inactivo'}</strong></div>
-                  <div><span className="text-muted-foreground">Conexión:</span> <strong className="text-foreground">Impulso RJ11 / Serie USB</strong></div>
+                <div className="p-3 rounded bg-muted/40 text-xs font-mono space-y-1">
+                  <div><span className="text-muted-foreground">Señal de apertura:</span> <strong className="text-foreground">{activaCajon ? 'Habilitada (Secuencia ESC/POS al imprimir)' : 'Deshabilitada'}</strong></div>
+                  <div><span className="text-muted-foreground">Identificación / Estado:</span> <span className="text-muted-foreground">Estado no detectado (conexión pasiva por impresora/RJ11)</span></div>
                 </div>
               </CardContent>
             </Card>
