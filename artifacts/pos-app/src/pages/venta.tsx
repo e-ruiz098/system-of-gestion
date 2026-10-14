@@ -19,6 +19,7 @@ import { useBarcodeScanner, cleanBarcode, matchProductByBarcode } from '@/hooks/
 import { calcularRedondeo } from '@/utils/rounding';
 
 interface CartItem {
+  cartItemId: string;
   id: number;
   nombre: string;
   codigo: string | null | undefined;
@@ -234,10 +235,11 @@ export default function Venta() {
       return;
     }
 
-    // Calcular cuánto quedaría en total antes de actualizar el estado
-    const existing = cart.find(item => item.id === p.id);
-    const currentQty = existing ? existing.cartQty : 0;
-    const newTotalQty = Math.round((currentQty + pendingQty) * 1000) / 1000;
+    // Sumar cantidad de este producto presente en todas las filas actuales del carrito
+    const currentQtyForProduct = cart
+      .filter(item => item.id === p.id)
+      .reduce((sum, item) => sum + item.cartQty, 0);
+    const newTotalQty = Math.round((currentQtyForProduct + pendingQty) * 1000) / 1000;
 
     // Si no entra en el stock, se muestra el modal y el carrito queda exactamente como estaba
     if (newTotalQty > stockActual) {
@@ -246,32 +248,26 @@ export default function Venta() {
       return;
     }
 
-    // Solo si entra dentro del stock se actualiza el carrito
-    setCart(prev => {
-      const existingInPrev = prev.find(item => item.id === p.id);
-      if (existingInPrev) {
-        return prev.map(item =>
-          item.id === p.id
-            ? { ...item, cartQty: newTotalQty, stock: stockActual, subtotal: Math.round(newTotalQty * item.precio) }
-            : item
-        );
-      }
-      const roundedPending = Math.round(pendingQty * 1000) / 1000;
-      const newItem: CartItem = {
-        id: p.id,
-        nombre: p.nombre,
-        codigo: p.codigo,
-        precio: p.precio,
-        stock: stockActual,
-        cartQty: roundedPending,
-        subtotal: Math.round(roundedPending * p.precio),
-        imagen: p.imagen ?? null,
-      };
-      return [...prev, newItem];
-    });
+    // Cada escaneo agrega una nueva fila independiente conservando el orden de carga exacto
+    const roundedPending = Math.round(pendingQty * 1000) / 1000;
+    const newCartItemId = `row-${Date.now()}-${Math.random().toString(36).substr(2, 7)}`;
+    const newItem: CartItem = {
+      cartItemId: newCartItemId,
+      id: p.id,
+      nombre: p.nombre,
+      codigo: p.codigo,
+      precio: p.precio,
+      stock: stockActual,
+      cartQty: roundedPending,
+      subtotal: Math.round(roundedPending * p.precio),
+      imagen: p.imagen ?? null,
+    };
+
+    setCart(prev => [...prev, newItem]);
 
     // Update last added preview (solo foto y nombre)
     setLastAdded({
+      cartItemId: newCartItemId,
       id: p.id,
       nombre: p.nombre,
       codigo: p.codigo,
@@ -287,7 +283,7 @@ export default function Venta() {
     }
 
     // Initialize display string for the item
-    setQtyDisplay(prev => new Map(prev).set(p.id, String(newTotalQty)));
+    setQtyDisplay(prev => new Map(prev).set(p.id, String(roundedPending)));
 
     // Clear name search if open
     setNameSearch('');
@@ -360,11 +356,16 @@ export default function Venta() {
     }
   };
 
-  const removeItem = (id: number) => {
-    const next = cart.filter(item => item.id !== id);
-    setCart(prev => prev.filter(item => item.id !== id));
-    if (lastAdded?.id === id) setLastAdded(next.length > 0 ? next[next.length - 1] : null);
-    setQtyDisplay(prev => { const m = new Map(prev); m.delete(id); return m; });
+  const removeItemByCartItemId = (cartItemId: string) => {
+    const itemToRemove = cart.find(item => item.cartItemId === cartItemId);
+    const next = cart.filter(item => item.cartItemId !== cartItemId);
+    setCart(prev => prev.filter(item => item.cartItemId !== cartItemId));
+    if (itemToRemove && lastAdded?.id === itemToRemove.id) {
+      setLastAdded(next.length > 0 ? next[next.length - 1] : null);
+    }
+    if (itemToRemove) {
+      setQtyDisplay(prev => { const m = new Map(prev); m.delete(itemToRemove.id); return m; });
+    }
     barcodeScanner.focus();
   };
 
@@ -377,7 +378,7 @@ export default function Venta() {
 
     // 1. Restar hasta llegar a cero debe eliminar la fila
     if (newQty <= 0) {
-      removeItem(id);
+      removeItemByCartItemId(item.cartItemId);
       return;
     }
 
@@ -420,7 +421,7 @@ export default function Venta() {
 
     // Si la cantidad es cero o menor, se elimina la fila
     if (newQty <= 0) {
-      removeItem(id);
+      removeItemByCartItemId(item.cartItemId);
       return;
     }
 
@@ -526,7 +527,7 @@ export default function Venta() {
         }
       `}</style>
 
-      {/* ── TICKET PARA IMPRESIÓN ───────────────────────────────────────────── */}
+      {/* ── TICKET PARA IMPRESIÓN (Agrupado únicamente al imprimir) ─────────── */}
       {showSuccess && config?.emite_tickets && (
         <div className="ticket-print p-6 text-sm" style={{ display: 'none' }}>
           <div className="text-center mb-4">
@@ -534,17 +535,64 @@ export default function Venta() {
             <p className="text-muted-foreground">{config?.direccion || ''}</p>
             <p className="text-muted-foreground">{config?.telefono || ''}</p>
           </div>
-          <div className="border-t border-b py-2 mb-4">
+          <div className="border-t border-b py-2 mb-3">
             <p><strong>Ticket #:</strong> {lastTicket}</p>
             <p><strong>Fecha:</strong> {new Date().toLocaleString('es-ES')}</p>
             {buyerName.trim() && <p><strong>Comprador:</strong> {buyerName.trim()}</p>}
           </div>
+
+          {/* Lista consolidada por producto y precio para la impresión */}
+          <div className="mb-4 border-b pb-3">
+            <div className="grid grid-cols-[3rem_1fr_6rem_6rem] font-bold border-b pb-1 mb-2 text-xs uppercase">
+              <span>Cant.</span>
+              <span>Producto</span>
+              <span className="text-right">P. Unit.</span>
+              <span className="text-right">Subtotal</span>
+            </div>
+            {useMemo(() => {
+              const groups: {
+                id: number;
+                nombre: string;
+                codigo: string | null | undefined;
+                precio: number;
+                cartQty: number;
+                subtotal: number;
+              }[] = [];
+              for (const item of cart) {
+                const existing = groups.find(
+                  g => g.id === item.id && Math.abs(g.precio - item.precio) < 0.001
+                );
+                if (existing) {
+                  existing.cartQty = Math.round((existing.cartQty + item.cartQty) * 1000) / 1000;
+                  existing.subtotal += item.subtotal;
+                } else {
+                  groups.push({
+                    id: item.id,
+                    nombre: item.nombre,
+                    codigo: item.codigo,
+                    precio: item.precio,
+                    cartQty: item.cartQty,
+                    subtotal: item.subtotal,
+                  });
+                }
+              }
+              return groups;
+            }, [cart]).map((line, i) => (
+              <div key={i} className="grid grid-cols-[3rem_1fr_6rem_6rem] py-1 border-b border-dashed border-border/50 text-xs">
+                <span className="font-bold">{line.cartQty}</span>
+                <span className="truncate pr-1">{line.nombre}</span>
+                <span className="text-right font-mono">{formatMoney(line.precio)}</span>
+                <span className="text-right font-mono font-bold">{formatMoney(line.subtotal)}</span>
+              </div>
+            ))}
+          </div>
+
           <div className="mb-4">
-            <p><strong>Subtotal:</strong> {formatMoney(subtotal)}</p>
+            <p className="flex justify-between"><span>Subtotal:</span> <span className="font-mono">{formatMoney(subtotal)}</span></p>
             {ajusteRedondeo !== 0 && (
-              <p><strong>Redondeo:</strong> {formatMoney(ajusteRedondeo)}</p>
+              <p className="flex justify-between"><span>Redondeo:</span> <span className="font-mono">{formatMoney(ajusteRedondeo)}</span></p>
             )}
-            <p className="text-lg font-bold"><strong>Total:</strong> {formatMoney(cartTotal)}</p>
+            <p className="flex justify-between text-lg font-bold border-t pt-1 mt-1"><span>Total:</span> <span className="font-mono">{formatMoney(cartTotal)}</span></p>
           </div>
         </div>
       )}
@@ -745,7 +793,7 @@ export default function Venta() {
             ) : (
               cart.map((item, idx) => (
                 <div
-                  key={item.id}
+                  key={item.cartItemId}
                   className="grid grid-cols-[2.5rem_2.5rem_7rem_1fr_8rem_7rem_7rem] gap-0 border-b border-border/50 hover:bg-muted/20 items-center"
                 >
                   {/* N° */}
@@ -983,7 +1031,7 @@ export default function Venta() {
 
                 {cart.map((item, idx) => (
                   <div
-                    key={item.id}
+                    key={item.cartItemId}
                     className="grid grid-cols-[2.5rem_2.5rem_6.5rem_1fr_5rem_6rem_6rem_3.5rem] gap-0 border-b border-border/50 hover:bg-muted/30 items-center transition-colors"
                   >
                     <div className="px-2 py-2.5 text-center text-xs text-muted-foreground font-mono">{idx + 1}</div>
@@ -1007,9 +1055,9 @@ export default function Venta() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => removeItem(item.id)}
+                        onClick={() => removeItemByCartItemId(item.cartItemId)}
                         className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/15 rounded-full transition-colors"
-                        title="Eliminar este ítem"
+                        title="Eliminar este ítem del carrito"
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
