@@ -19,6 +19,8 @@ export const cierresCajaTable = sqliteTable("cierres_caja", {
   total_esperado: real("total_esperado").notNull(),
   total_contado: real("total_contado").notNull(),
   diferencia: real("diferencia").notNull(),
+  suma_redondeos: real("suma_redondeos").notNull().default(0),
+  total_reembolsado_efectivo: real("total_reembolsado_efectivo").notNull().default(0),
   fecha_cierre: integer("fecha_cierre", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
   snapshot_stock: text("snapshot_stock"),
 });

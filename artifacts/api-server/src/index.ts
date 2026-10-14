@@ -15,11 +15,15 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-app.listen(port, (err) => {
+// Bind to loopback only — never expose directly to the network.
+// If you need LAN access, put a reverse proxy (nginx/caddy) in front.
+const HOST = process.env.HOST ?? "127.0.0.1";
+
+app.listen(port, HOST, (err) => {
   if (err) {
     logger.error({ err }, "Error listening on port");
     process.exit(1);
   }
 
-  logger.info({ port }, "Server listening");
+  logger.info({ port, host: HOST }, "Server listening");
 });

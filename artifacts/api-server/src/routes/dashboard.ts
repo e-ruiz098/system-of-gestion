@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { and, gte, eq, lte, isNull, desc, sql, count, sum } from "drizzle-orm";
 import {
   db, ventasTable, productosTable, configuracionTable,
-  detalleVentaTable, aperturasCajaTable, usuariosTable,
+  detalleVentaTable, aperturasCajaTable, usuariosTable, devolucionesTable,
 } from "@workspace/db";
 
 const router: IRouter = Router();
@@ -46,10 +46,30 @@ router.get("/dashboard", async (req, res): Promise<void> => {
     .from(ventasTable)
     .where(and(gte(ventasTable.fecha, todayStart), eq(ventasTable.anulada, false)));
 
+  // Obtener reembolsos de hoy
+  const [reembolsosHoy] = await db
+    .select({ total: sum(devolucionesTable.total_reembolso) })
+    .from(devolucionesTable)
+    .where(gte(devolucionesTable.fecha, todayStart));
+
+  const ingresosBrutosHoy = Number(ventasHoy?.total ?? 0);
+  const totalDevueltoHoy = Number(reembolsosHoy?.total ?? 0);
+  const ventasNetasHoy = ingresosBrutosHoy - totalDevueltoHoy;
+
   const [ventasMes] = await db
     .select({ cnt: count(), total: sum(ventasTable.total) })
     .from(ventasTable)
     .where(and(gte(ventasTable.fecha, monthStart), eq(ventasTable.anulada, false)));
+
+  // Obtener reembolsos del mes
+  const [reembolsosMes] = await db
+    .select({ total: sum(devolucionesTable.total_reembolso) })
+    .from(devolucionesTable)
+    .where(gte(devolucionesTable.fecha, monthStart));
+
+  const ingresosBrutosMes = Number(ventasMes?.total ?? 0);
+  const totalDevueltoMes = Number(reembolsosMes?.total ?? 0);
+  const ventasNetasMes = ingresosBrutosMes - totalDevueltoMes;
 
   const [productosActivos] = await db
     .select({ cnt: count() })
@@ -81,9 +101,15 @@ router.get("/dashboard", async (req, res): Promise<void> => {
 
   res.json({
     ventas_hoy: ventasHoy?.cnt ?? 0,
-    ingresos_hoy: parseFloat(String(ventasHoy?.total ?? 0)),
+    ingresos_hoy: parseFloat(String(ventasNetasHoy)),
+    ingresos_brutos_hoy: parseFloat(String(ingresosBrutosHoy)),
+    total_devuelto_hoy: parseFloat(String(totalDevueltoHoy)),
+    ingresos_netos_hoy: parseFloat(String(ventasNetasHoy)),
     ventas_mes: ventasMes?.cnt ?? 0,
-    ingresos_mes: parseFloat(String(ventasMes?.total ?? 0)),
+    ingresos_mes: parseFloat(String(ventasNetasMes)),
+    ingresos_brutos_mes: parseFloat(String(ingresosBrutosMes)),
+    total_devuelto_mes: parseFloat(String(totalDevueltoMes)),
+    ingresos_netos_mes: parseFloat(String(ventasNetasMes)),
     productos_activos: productosActivos?.cnt ?? 0,
     productos_stock_bajo: stockBajo?.cnt ?? 0,
     productos_agotados: agotados?.cnt ?? 0,
@@ -97,22 +123,46 @@ router.get("/dashboard/ventas-por-dia", async (req, res): Promise<void> => {
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-  const rows = await db
+  const fechaVentaLocal = sql<string>`DATE(${ventasTable.fecha}, 'unixepoch', 'localtime')`;
+  const salesRows = await db
     .select({
-      fecha: sql<string>`DATE(${ventasTable.fecha})`,
+      fecha: fechaVentaLocal,
       total_ventas: count(),
       ingresos: sum(ventasTable.total),
     })
     .from(ventasTable)
     .where(and(gte(ventasTable.fecha, thirtyDaysAgo), eq(ventasTable.anulada, false)))
-    .groupBy(sql`DATE(${ventasTable.fecha})`)
-    .orderBy(sql`DATE(${ventasTable.fecha})`);
+    .groupBy(fechaVentaLocal)
+    .orderBy(fechaVentaLocal);
 
-  res.json(rows.map(r => ({
-    fecha: r.fecha,
-    total_ventas: r.total_ventas,
-    ingresos: parseFloat(String(r.ingresos ?? 0)),
-  })));
+  const fechaDevolucionLocal = sql<string>`DATE(${devolucionesTable.fecha}, 'unixepoch', 'localtime')`;
+  const refundRows = await db
+    .select({
+      fecha: fechaDevolucionLocal,
+      total_devuelto: sum(devolucionesTable.total_reembolso),
+    })
+    .from(devolucionesTable)
+    .where(gte(devolucionesTable.fecha, thirtyDaysAgo))
+    .groupBy(fechaDevolucionLocal);
+  const daily = new Map<string, { total_ventas: number; ingresos_brutos: number; total_devuelto: number }>();
+  for (const row of salesRows) {
+    daily.set(row.fecha, {
+      total_ventas: row.total_ventas,
+      ingresos_brutos: Number(row.ingresos ?? 0),
+      total_devuelto: 0,
+    });
+  }
+  for (const row of refundRows) {
+    const value = daily.get(row.fecha) ?? { total_ventas: 0, ingresos_brutos: 0, total_devuelto: 0 };
+    value.total_devuelto = Number(row.total_devuelto ?? 0);
+    daily.set(row.fecha, value);
+  }
+  res.json(Array.from(daily, ([fecha, totals]) => ({
+    fecha,
+    total_ventas: totals.total_ventas,
+    ingresos: totals.ingresos_brutos - totals.total_devuelto,
+    total_devuelto: totals.total_devuelto,
+  })).sort((a, b) => a.fecha.localeCompare(b.fecha)));
 });
 
 router.get("/dashboard/productos-top", async (req, res): Promise<void> => {

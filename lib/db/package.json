@@ -8,17 +8,18 @@
     "./schema": "./src/schema/index.ts"
   },
   "scripts": {
+    "migrate:cash-refunds": "node ./migrate-cash-refunds.mjs",
     "push": "drizzle-kit push --config ./drizzle.config.ts",
     "push-force": "drizzle-kit push --force --config ./drizzle.config.ts"
   },
   "dependencies": {
-    "better-sqlite3": "^11.3.0",
+    "@libsql/client": "^0.17.4",
+    "@libsql/linux-x64-gnu": "^0.5.29",
     "drizzle-orm": "catalog:",
     "drizzle-zod": "^0.8.3",
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "catalog:",
     "drizzle-kit": "^0.31.10"
   }

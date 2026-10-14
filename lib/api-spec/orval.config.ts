@@ -3,7 +3,6 @@ import path from "path";
 
 const root = path.resolve(__dirname, "..", "..");
 const apiClientReactSrc = path.resolve(root, "lib", "api-client-react", "src");
-const apiZodSrc = path.resolve(root, "lib", "api-zod", "src");
 
 // Our exports make assumptions about the title of the API being "Api" (i.e. generated output is `api.ts`).
 const titleTransformer: InputTransformerFn = (config) => {
@@ -16,7 +15,7 @@ const titleTransformer: InputTransformerFn = (config) => {
 export default defineConfig({
   "api-client-react": {
     input: {
-      target: "./openapi.yaml",
+      target: path.resolve(__dirname, "openapi.yaml"),
       override: {
         transformer: titleTransformer,
       },
@@ -28,7 +27,7 @@ export default defineConfig({
       mode: "split",
       baseUrl: "/api",
       clean: true,
-      prettier: true,
+      prettier: false,
       override: {
         fetch: {
           includeHttpResponseReturnType: false,
@@ -37,35 +36,13 @@ export default defineConfig({
           path: path.resolve(apiClientReactSrc, "custom-fetch.ts"),
           name: "customFetch",
         },
-      },
-    },
-  },
-  zod: {
-    input: {
-      target: "./openapi.yaml",
-      override: {
-        transformer: titleTransformer,
-      },
-    },
-    output: {
-      workspace: apiZodSrc,
-      client: "zod",
-      target: "generated",
-      schemas: { path: "generated/types", type: "typescript" },
-      mode: "split",
-      clean: true,
-      prettier: true,
-      override: {
-        zod: {
-          coerce: {
-            query: ['boolean', 'number', 'string'],
-            param: ['boolean', 'number', 'string'],
-            body: ['bigint', 'date'],
-            response: ['bigint', 'date'],
-          },
+        query: {
+          version: 5,
         },
-        useDates: true,
-        useBigInt: true,
+        operations: {
+          useOperationId: true,
+        },
+        msr: false,
       },
     },
   },

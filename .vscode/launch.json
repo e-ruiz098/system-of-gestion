@@ -1,0 +1,35 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug: API Server",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@workspace/api-server", "run", "dev"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "env": {
+        "NODE_OPTIONS": "--inspect"
+      }
+    },
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "Debug: POS App (Chrome)",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/artifacts/pos-app/src",
+      "sourceMapPathOverrides": {
+        "webpack:///./src/*": "${webRoot}/*"
+      }
+    },
+    {
+      "type": "msedge",
+      "request": "launch",
+      "name": "Debug: POS App (Edge)",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/artifacts/pos-app/src"
+    }
+  ]
+}

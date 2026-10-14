@@ -5,12 +5,16 @@ interface AuthContextType {
   user: AuthUser | null;
   isLoading: boolean;
   isConfigured: boolean;
+  connectionError: boolean;
+  refetchConfig: () => void;
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   isLoading: true,
   isConfigured: false,
+  connectionError: false,
+  refetchConfig: () => {},
 });
 
 export const useAuth = () => useContext(AuthContext);
@@ -20,11 +24,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     data: config,
     isLoading: isConfigLoading,
     error: configError,
+    refetch: refetchConfig,
   } = useGetConfig({
     query: { queryKey: ['/api/config'], retry: false, refetchOnWindowFocus: false },
   });
 
   // 404 on /api/config means the system has never been set up
+  const isFreshInstall = (configError as any)?.status === 404;
+  const connectionError = !!configError && !isFreshInstall;
   const isConfigured = !configError && !!config;
 
   const {
@@ -46,6 +53,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       user: user ?? null,
       isLoading,
       isConfigured,
+      connectionError,
+      refetchConfig: () => { refetchConfig(); },
     }}>
       {children}
     </AuthContext.Provider>

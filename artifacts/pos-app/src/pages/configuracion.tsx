@@ -34,6 +34,11 @@ export default function Configuracion() {
   // Preferences state
   const [activaKg, setActivaKg] = useState(false);
   const [mostrarDecimales, setMostrarDecimales] = useState(false);
+  const [activaCajon, setActivaCajon] = useState(false);
+  const [redondeoActivo, setRedondeoActivo] = useState(true);
+  const [redondeoMultiplo, setRedondeoMultiplo] = useState(50);
+  const [horasLimiteDevolucion, setHorasLimiteDevolucion] = useState(48);
+  const [devolucionesRequierenTicket, setDevolucionesRequierenTicket] = useState(true);
 
   // New user dialog
   const [showNewUser, setShowNewUser] = useState(false);
@@ -51,6 +56,11 @@ export default function Configuracion() {
       });
       setActivaKg((config as any).activa_kg ?? false);
       setMostrarDecimales((config as any).mostrar_decimales ?? false);
+      setActivaCajon((config as any).activa_cajon ?? false);
+      setRedondeoActivo((config as any).redondeo_activo ?? true);
+      setRedondeoMultiplo((config as any).redondeo_multiplo ?? 50);
+      setHorasLimiteDevolucion((config as any).horas_limite_devolucion ?? 48);
+      setDevolucionesRequierenTicket((config as any).devoluciones_requieren_ticket ?? true);
     }
   }, [config]);
 
@@ -64,7 +74,20 @@ export default function Configuracion() {
   };
 
   const savePreferencias = () => {
-    updateConfigMutation.mutate({ data: { activa_kg: activaKg, mostrar_decimales: mostrarDecimales } as any }, {
+    if (!Number.isSafeInteger(redondeoMultiplo) || redondeoMultiplo < 1 || redondeoMultiplo > 10000 ||
+      !Number.isInteger(horasLimiteDevolucion) || horasLimiteDevolucion < 0 || horasLimiteDevolucion > 8760) {
+      toast({ title: "Configuración inválida", description: "Revisa el múltiplo y el plazo de devolución.", variant: "destructive" });
+      return;
+    }
+    updateConfigMutation.mutate({ data: {
+      activa_kg: activaKg,
+      mostrar_decimales: mostrarDecimales,
+      activa_cajon: activaCajon,
+      redondeo_activo: redondeoActivo,
+      redondeo_multiplo: redondeoMultiplo,
+      horas_limite_devolucion: horasLimiteDevolucion,
+      devoluciones_requieren_ticket: devolucionesRequierenTicket,
+    } as any }, {
       onSuccess: () => {
         toast({ title: "Preferencias guardadas" });
         queryClient.invalidateQueries({ queryKey: ['/api/config'] });
@@ -261,7 +284,10 @@ export default function Configuracion() {
                   <Switch checked={mostrarDecimales} onCheckedChange={setMostrarDecimales} />
                 </div>
 
-                <Button onClick={savePreferencias} disabled={updateConfigMutation.isPending}>
+                <Button
+                  onClick={savePreferencias}
+                  disabled={updateConfigMutation.isPending || !Number.isSafeInteger(redondeoMultiplo) || redondeoMultiplo < 1 || redondeoMultiplo > 10000 || !Number.isInteger(horasLimiteDevolucion) || horasLimiteDevolucion < 0 || horasLimiteDevolucion > 8760}
+                >
                   Guardar Preferencias
                 </Button>
               </CardContent>
@@ -302,6 +328,121 @@ export default function Configuracion() {
                       Basta con conectarlos al USB — cuando escanees un código, el texto aparecerá en el campo de búsqueda activo del Terminal POS.
                     </p>
                   </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="max-w-2xl">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  💰 Cajón de Dinero
+                </CardTitle>
+                <CardDescription>
+                  Indica si tu negocio tiene un cajón de dinero electrónico conectado.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between p-4 border rounded-lg">
+                  <div className="space-y-0.5 flex-1 pr-4">
+                    <Label className="text-base">¿Este negocio tiene un cajón de dinero conectado?</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Si no tenés certeza de si el dispositivo se puede detectar automáticamente,
+                      es más confiable indicarlo manualmente aquí en vez de depender de una detección automática.
+                      Si está apagado, la opción de abrir el cajón no se mostrará en el Terminal POS.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={activaCajon}
+                    onCheckedChange={(v) => {
+                      setActivaCajon(v);
+                      updateConfigMutation.mutate(
+                        { data: { activa_cajon: v } as any },
+                        {
+                          onSuccess: () => {
+                            toast({ title: v ? "Cajón de dinero activado" : "Cajón de dinero desactivado" });
+                            queryClient.invalidateQueries({ queryKey: ['/api/config'] });
+                          },
+                        }
+                      );
+                    }}
+                  />
+                </div>
+                {activaCajon && (
+                  <div className="flex gap-3 p-3 rounded-lg border border-blue-500/20 bg-blue-500/5">
+                    <Info className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
+                    <p className="text-xs text-blue-400/80">
+                      El cajón de dinero se abre automáticamente al confirmar una venta en efectivo.
+                      Asegurate de que esté conectado a la impresora de tickets o directamente al puerto serie/USB.
+                    </p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="max-w-2xl">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  🔄 Redondeo de Cobros
+                </CardTitle>
+                <CardDescription>
+                  Configura el redondeo automático de los totales de venta para facilitar el cambio.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between p-4 border rounded-lg">
+                  <div className="space-y-0.5 flex-1 pr-4">
+                    <Label className="text-base">Activar redondeo de cobros</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Redondea el total de cada venta hacia abajo al múltiplo más cercano para facilitar el cambio.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={redondeoActivo}
+                    onCheckedChange={setRedondeoActivo}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="redondeo-multiplo">Múltiplo de redondeo (Gs)</Label>
+                  <Input
+                    id="redondeo-multiplo"
+                    type="number"
+                    min={1}
+                    max={10000}
+                    step={1}
+                    value={redondeoMultiplo}
+                    onChange={e => setRedondeoMultiplo(Number(e.target.value))}
+                  />
+                </div>
+                <div className="flex gap-3 p-3 rounded-lg border border-blue-500/20 bg-blue-500/5">
+                  <Info className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
+                  <p className="text-xs text-blue-400/80">
+                    El total se redondea siempre hacia abajo al múltiplo configurado de {redondeoMultiplo} Gs. Los montos menores se cobran exactos.
+                  </p>
+                </div>
+                <div className="space-y-4 border-t pt-4">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="horas-devolucion">Plazo para devolver (horas)</Label>
+                    <Input
+                      id="horas-devolucion"
+                      type="number"
+                      min={0}
+                      max={8760}
+                      step={1}
+                      value={horasLimiteDevolucion}
+                      onChange={e => setHorasLimiteDevolucion(Number(e.target.value))}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-4 p-4 border rounded-lg">
+                    <Label htmlFor="requiere-ticket-devolucion" className="text-sm font-medium">Las devoluciones requieren ticket</Label>
+                    <Switch
+                      id="requiere-ticket-devolucion"
+                      checked={devolucionesRequierenTicket}
+                      onCheckedChange={setDevolucionesRequierenTicket}
+                    />
+                  </div>
+                  <Button onClick={savePreferencias} disabled={updateConfigMutation.isPending}>
+                    Guardar configuración de cobros y devoluciones
+                  </Button>
                 </div>
               </CardContent>
             </Card>

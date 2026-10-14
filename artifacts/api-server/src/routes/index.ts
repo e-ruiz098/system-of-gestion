@@ -9,6 +9,8 @@ import ventasRouter from "./ventas";
 import devolucionesRouter from "./devoluciones";
 import cajaRouter from "./caja";
 import dashboardRouter from "./dashboard";
+import uploadRouter from "./upload";
+import cambiosRouter from "./cambios";
 
 const router: IRouter = Router();
 
@@ -20,7 +22,9 @@ router.use(categoriasRouter);
 router.use(productosRouter);
 router.use(ventasRouter);
 router.use(devolucionesRouter);
+router.use(cambiosRouter);
 router.use(cajaRouter);
 router.use(dashboardRouter);
+router.use(uploadRouter);
 
 export default router;

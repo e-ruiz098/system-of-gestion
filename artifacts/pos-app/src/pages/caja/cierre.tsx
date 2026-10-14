@@ -15,7 +15,7 @@ export default function CajaCierre() {
   const cerrarMutation = useCerrarCaja();
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
-  const { data: cajaActiva, isLoading } = useGetCajaActiva();
+  const { data: cajaActiva, isLoading } = useGetCajaActiva({ query: { retry: false } });
   const { data: todosProductos } = useGetProductos({ query: { queryKey: ['/api/productos', { activo: 'all' }] } } as any);
   const { formatMoney } = useCurrency();
   const printRef = useRef<HTMLDivElement>(null);
@@ -34,7 +34,13 @@ export default function CajaCierre() {
     );
   }
 
-  const esperado = cajaActiva ? (cajaActiva.apertura.fondo_inicial || 0) + (cajaActiva.total_efectivo || 0) : 0;
+  const esperado = cajaActiva
+    ? (cajaActiva.total_esperado ?? (
+      (cajaActiva.apertura.fondo_inicial || 0) +
+      (cajaActiva.total_efectivo || 0) -
+      (cajaActiva.total_reembolsado_efectivo || 0)
+    ))
+    : 0;
   const diff = Number(contado) - esperado;
 
   const handleCerrar = () => {
@@ -82,11 +88,10 @@ export default function CajaCierre() {
           <tbody className="divide-y divide-border">
             {sortedProducts.map(p => {
               const estado = (p as any).stock_estado ?? 'verde';
-              const unidad = (p as any).unidad_tipo === 'kg' ? ' kg' : '';
               return (
                 <tr key={p.id} className="hover:bg-muted/20">
                   <td className="px-3 py-2 font-medium">{p.nombre}</td>
-                  <td className="px-3 py-2 text-right font-mono">{p.stock}{unidad}</td>
+                  <td className="px-3 py-2 text-right font-mono">{p.stock}</td>
                   <td className="px-3 py-2 text-center">
                     {estado === 'rojo'    && <span className="text-xs font-bold text-destructive">🔴 Agotado</span>}
                     {estado === 'amarillo' && <span className="text-xs font-bold text-amber-500">🟡 Bajo</span>}
@@ -142,7 +147,7 @@ export default function CajaCierre() {
         <h1 className="text-2xl font-bold shrink-0">Cierre de Caja</h1>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 shrink-0">
           <Card>
             <CardHeader className="pb-1 pt-3 px-4"><CardTitle className="text-xs text-muted-foreground">Fondo Inicial</CardTitle></CardHeader>
             <CardContent className="pb-3 px-4"><div className="text-xl font-bold font-mono">{formatMoney(cajaActiva!.apertura.fondo_inicial)}</div></CardContent>
@@ -152,12 +157,32 @@ export default function CajaCierre() {
             <CardContent className="pb-3 px-4"><div className="text-xl font-bold text-emerald-600 font-mono">+{formatMoney(cajaActiva!.total_efectivo)}</div></CardContent>
           </Card>
           <Card>
+            <CardHeader className="pb-1 pt-3 px-4"><CardTitle className="text-xs text-muted-foreground">Devoluciones en efectivo</CardTitle></CardHeader>
+            <CardContent className="pb-3 px-4"><div className="text-xl font-bold text-destructive font-mono">−{formatMoney(cajaActiva!.total_reembolsado_efectivo || 0)}</div></CardContent>
+          </Card>
+          <Card>
             <CardHeader className="pb-1 pt-3 px-4"><CardTitle className="text-xs text-muted-foreground">Ventas Tarjeta</CardTitle></CardHeader>
             <CardContent className="pb-3 px-4"><div className="text-xl font-bold text-blue-500 font-mono">{formatMoney(cajaActiva!.total_tarjeta || 0)}</div></CardContent>
           </Card>
           <Card>
+            <CardHeader className="pb-1 pt-3 px-4"><CardTitle className="text-xs text-muted-foreground">Devoluciones tarjeta</CardTitle></CardHeader>
+            <CardContent className="pb-3 px-4"><div className="text-xl font-bold font-mono">{formatMoney(cajaActiva!.total_reembolsado_tarjeta || 0)}</div></CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-1 pt-3 px-4"><CardTitle className="text-xs text-muted-foreground">Ventas transferencia</CardTitle></CardHeader>
+            <CardContent className="pb-3 px-4"><div className="text-xl font-bold font-mono">{formatMoney(cajaActiva!.total_transferencia || 0)}</div></CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-1 pt-3 px-4"><CardTitle className="text-xs text-muted-foreground">Devoluciones transferencia</CardTitle></CardHeader>
+            <CardContent className="pb-3 px-4"><div className="text-xl font-bold font-mono">{formatMoney(cajaActiva!.total_reembolsado_transferencia || 0)}</div></CardContent>
+          </Card>
+          <Card>
             <CardHeader className="pb-1 pt-3 px-4"><CardTitle className="text-xs text-muted-foreground">Cantidad Ventas</CardTitle></CardHeader>
             <CardContent className="pb-3 px-4"><div className="text-xl font-bold">{cajaActiva!.cantidad_ventas}</div></CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-1 pt-3 px-4"><CardTitle className="text-xs text-muted-foreground">Redondeos</CardTitle></CardHeader>
+            <CardContent className="pb-3 px-4"><div className="text-xl font-bold text-amber-600 font-mono">{formatMoney(cajaActiva!.suma_redondeos || 0)}</div></CardContent>
           </Card>
         </div>
 

@@ -14,7 +14,9 @@ export const productosTable = sqliteTable("productos", {
   stock_minimo: real("stock_minimo"),
   unidad_tipo: text("unidad_tipo").notNull().default("unidad"),
   categoria_id: integer("categoria_id").references(() => categoriasTable.id),
+  subcategoria_id: integer("subcategoria_id").references(() => categoriasTable.id),
   activo: integer("activo", { mode: "boolean" }).notNull().default(true),
+  imagen: text("imagen"),
   creado_en: integer("creado_en", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
 });
 

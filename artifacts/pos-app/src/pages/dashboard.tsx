@@ -37,13 +37,13 @@ export default function Dashboard() {
         </Card>
         <Card className="shadow-sm">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Ingresos Hoy</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Ingresos netos hoy</CardTitle>
             <DollarSign className="w-4 h-4 text-emerald-500" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatMoney(dashboard?.ingresos_hoy || 0)}</div>
             <p className="text-xs text-muted-foreground mt-1">
-              Total recaudado
+              Bruto {formatMoney(dashboard?.ingresos_brutos_hoy || 0)} · devuelto {formatMoney(dashboard?.total_devuelto_hoy || 0)}
             </p>
           </CardContent>
         </Card>
@@ -77,24 +77,47 @@ export default function Dashboard() {
         {/* Chart */}
         <Card className="col-span-1 lg:col-span-2 shadow-sm">
           <CardHeader>
-            <CardTitle>Ingresos últimos 30 días</CardTitle>
+            <CardTitle>Ingresos netos últimos 30 días</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="h-[300px] w-full">
-              {!isVentasLoading && ventasDia ? (
+              {!isVentasLoading ? (
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={ventasDia.slice().reverse()}>
+                  <BarChart data={
+                    // Filter out records with invalid/missing dates before rendering.
+                    // Logs a warning in dev so the data source can be traced if it recurs.
+                    (Array.isArray(ventasDia) ? ventasDia : []).filter((r: any) => {
+                      if (!r?.fecha) {
+                        console.warn('[Dashboard] Registro sin fecha descartado del gráfico:', r);
+                        return false;
+                      }
+                      const d = new Date(r.fecha);
+                      if (isNaN(d.getTime())) {
+                        console.warn('[Dashboard] Registro con fecha inválida descartado del gráfico:', r.fecha, r);
+                        return false;
+                      }
+                      return true;
+                    }).slice().reverse()
+                  }>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-                    <XAxis 
-                      dataKey="fecha" 
-                      tickFormatter={(val) => format(parseISO(val), 'dd MMM')}
+                    <XAxis
+                      dataKey="fecha"
+                      tickFormatter={(val) => {
+                        // Never throw — if date is invalid return empty string
+                        try {
+                          if (!val) return '';
+                          const d = parseISO(String(val));
+                          if (isNaN(d.getTime())) return '';
+                          return format(d, 'dd MMM');
+                        } catch { return ''; }
+                      }}
                       stroke="hsl(var(--muted-foreground))"
                       fontSize={12}
                       tickLine={false}
                       axisLine={false}
                       dy={10}
                     />
-                    <YAxis 
+                    <YAxis
                       tickFormatter={(val) => `${moneda}${val/1000}k`}
                       stroke="hsl(var(--muted-foreground))"
                       fontSize={12}
@@ -102,11 +125,18 @@ export default function Dashboard() {
                       axisLine={false}
                       dx={-10}
                     />
-                    <Tooltip 
+                    <Tooltip
                       cursor={{fill: 'hsl(var(--muted))'}}
                       contentStyle={{ backgroundColor: 'hsl(var(--popover))', borderColor: 'hsl(var(--border))', color: 'hsl(var(--popover-foreground))', borderRadius: 'var(--radius)' }}
                       formatter={(value: number) => [formatMoney(value), 'Ingresos']}
-                      labelFormatter={(label) => format(parseISO(label), 'dd MMMM yyyy', {locale: es})}
+                      labelFormatter={(label) => {
+                        try {
+                          if (!label) return '';
+                          const d = parseISO(String(label));
+                          if (isNaN(d.getTime())) return String(label);
+                          return format(d, 'dd MMMM yyyy', { locale: es });
+                        } catch { return String(label); }
+                      }}
                     />
                     <Bar dataKey="ingresos" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
                   </BarChart>

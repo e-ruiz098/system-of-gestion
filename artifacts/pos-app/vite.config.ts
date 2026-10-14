@@ -8,8 +8,8 @@ const port = process.env.PORT ? Number(process.env.PORT) : 5173;
 const basePath = process.env.BASE_PATH ?? '/';
 
 // Set API_PORT to proxy /api/* requests to the backend during local dev.
-// Example: API_PORT=8080 pnpm run dev
-const apiPort = process.env.API_PORT ? Number(process.env.API_PORT) : null;
+// Example: API_PORT=8080 pnpm run dev (defaults to 8080)
+const apiPort = process.env.API_PORT ? Number(process.env.API_PORT) : 8080;
 
 export default defineConfig({
   base: basePath,

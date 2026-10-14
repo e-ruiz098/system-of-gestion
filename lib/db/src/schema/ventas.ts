@@ -11,11 +11,19 @@ export const ventasTable = sqliteTable("ventas", {
   numero_ticket: integer("numero_ticket").unique(),
   usuario_id: integer("usuario_id").references(() => usuariosTable.id),
   apertura_caja_id: integer("apertura_caja_id").references(() => aperturasCajaTable.id),
+  nombre_comprador: text("nombre_comprador"),
+  subtotal: real("subtotal").notNull().default(0),
+  ajuste_redondeo: real("ajuste_redondeo").notNull().default(0),
   total: real("total").notNull(),
-  metodo_pago: text("metodo_pago", { enum: ["efectivo", "tarjeta", "transferencia", "mixto"] }),
+  metodo_pago: text("metodo_pago", { enum: ["efectivo", "tarjeta", "transferencia", "mixto", "cambio"] }),
+  monto_efectivo: real("monto_efectivo").notNull().default(0),
+  monto_tarjeta: real("monto_tarjeta").notNull().default(0),
+  monto_transferencia: real("monto_transferencia").notNull().default(0),
   detalle_pago_mixto: text("detalle_pago_mixto"),
   fecha: integer("fecha", { mode: "timestamp" }).notNull().default(sql`(unixepoch())`),
   anulada: integer("anulada", { mode: "boolean" }).notNull().default(false),
+  anulada_por_usuario: integer("anulada_por_usuario").references(() => usuariosTable.id),
+  fecha_anulacion: integer("fecha_anulacion", { mode: "timestamp" }),
 });
 
 export const detalleVentaTable = sqliteTable("detalle_venta", {

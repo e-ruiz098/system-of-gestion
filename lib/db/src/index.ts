@@ -4,9 +4,37 @@ import path from "path";
 import { mkdirSync, existsSync } from "fs";
 import * as schema from "./schema";
 
-const DB_PATH =
-  process.env["SQLITE_DB_PATH"] ??
-  path.join(__dirname, "../data/local.db");
+function resolveDbPath(): string {
+  if (process.env["SQLITE_DB_PATH"]) {
+    return process.env["SQLITE_DB_PATH"];
+  }
+
+  let curr = __dirname;
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(curr, "lib/db/data/local.db");
+    if (existsSync(candidate)) return candidate;
+    const ws = path.join(curr, "pnpm-workspace.yaml");
+    if (existsSync(ws)) return path.join(curr, "lib/db/data/local.db");
+    const parent = path.dirname(curr);
+    if (parent === curr) break;
+    curr = parent;
+  }
+
+  curr = process.cwd();
+  for (let i = 0; i < 6; i++) {
+    const candidate = path.join(curr, "lib/db/data/local.db");
+    if (existsSync(candidate)) return candidate;
+    const ws = path.join(curr, "pnpm-workspace.yaml");
+    if (existsSync(ws)) return path.join(curr, "lib/db/data/local.db");
+    const parent = path.dirname(curr);
+    if (parent === curr) break;
+    curr = parent;
+  }
+
+  return path.join(__dirname, "../data/local.db");
+}
+
+const DB_PATH = resolveDbPath();
 
 const DB_DIR = path.dirname(DB_PATH);
 if (!existsSync(DB_DIR)) {
@@ -23,3 +51,5 @@ const client = createClient({
 export const db = drizzle(client, { schema });
 
 export * from "./schema";
+export * from "./utils/rounding";
+export * from "./utils/caja-montos";

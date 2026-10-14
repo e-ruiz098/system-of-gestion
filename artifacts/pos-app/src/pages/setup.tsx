@@ -57,9 +57,19 @@ export default function Setup() {
         onSuccess: () => {
           setLocation('/login');
         },
-        onError: (err) => {
+        onError: (err: any) => {
           console.error(err);
-          alert("Error en la configuración");
+          if (err?.status === 409) {
+            alert("El sistema ya fue configurado previamente. Redirigiendo a inicio de sesión...");
+            setLocation('/login');
+          } else if (err instanceof TypeError || err?.name === "TypeError") {
+            // Network-level failure (e.g. server not running)
+            alert("Error de conexión: No se pudo comunicar con el servidor backend. Asegúrate de que el servidor API esté iniciado.");
+          } else if (err?.status === 500 || err?.status === 502 || err?.status === 504) {
+            alert("Error del servidor: " + (err?.data?.error || "Error interno. Revisa los logs del servidor."));
+          } else {
+            alert("Error en la configuración: " + (err?.data?.error || err?.message || "Ocurrió un error inesperado"));
+          }
         }
       }
     );

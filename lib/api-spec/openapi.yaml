@@ -434,12 +434,31 @@ paths:
               schema:
                 $ref: "#/components/schemas/ImportResult"
 
+  /upload:
+    post:
+      operationId: uploadImage
+      tags: [productos]
+      summary: Upload an image (accepts base64 data URL and saves to server)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadImageInput"
+      responses:
+        "200":
+          description: Uploaded image URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageUploadResult"
+
   # VENTAS
   /ventas:
     get:
       operationId: getVentas
       tags: [ventas]
-      summary: List sales (admin only, filterable by date)
+      summary: List sales (admins see all; sellers see their own)
       parameters:
         - name: fecha_desde
           in: query
@@ -453,6 +472,11 @@ paths:
           in: query
           schema:
             type: integer
+        - name: numero_ticket
+          in: query
+          schema:
+            type: integer
+            minimum: 1
       responses:
         "200":
           description: List of sales
@@ -512,6 +536,26 @@ paths:
         "200":
           description: Sale voided
 
+  /ventas/ticket/{numero}:
+    get:
+      operationId: getVentaPorTicket
+      tags: [ventas]
+      summary: Get a sale by ticket number (admins see all; sellers see their own)
+      parameters:
+        - name: numero
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Sale with detail and return totals
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VentaDetalle"
+
   # DEVOLUCIONES
   /devoluciones:
     get:
@@ -553,6 +597,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Devolucion"
+
+  /cambios:
+    post:
+      operationId: createCambio
+      tags: [devoluciones]
+      summary: Process an atomic product exchange (return + new sale in one step)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CambioInput"
+      responses:
+        "201":
+          description: Created exchange
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CambioResult"
 
   # CAJA
   /caja/apertura:
@@ -733,7 +796,7 @@ components:
     # CONFIG
     Config:
       type: object
-      required: [id, nombre_empresa, moneda, emite_tickets, tema_color, stock_bajo_umbral_global, dias_retencion_tickets]
+      required: [id, nombre_empresa, moneda, emite_tickets, tema_color, stock_bajo_umbral_global, dias_retencion_tickets, redondeo_activo, redondeo_multiplo, horas_limite_devolucion, devoluciones_requieren_ticket]
       properties:
         id:
           type: integer
@@ -763,6 +826,16 @@ components:
           type: integer
         fecha_instalacion:
           type: ["string", "null"]
+        redondeo_activo:
+          type: boolean
+        redondeo_multiplo:
+          type: integer
+        horas_limite_devolucion:
+          type: integer
+          minimum: 0
+          maximum: 8760
+        devoluciones_requieren_ticket:
+          type: boolean
 
     SetupInput:
       type: object
@@ -824,6 +897,16 @@ components:
           type: string
         stock_bajo_umbral_global:
           type: integer
+        redondeo_activo:
+          type: boolean
+        redondeo_multiplo:
+          type: integer
+        horas_limite_devolucion:
+          type: integer
+          minimum: 0
+          maximum: 8760
+        devoluciones_requieren_ticket:
+          type: boolean
 
     # USUARIOS
     Usuario:
@@ -909,6 +992,8 @@ components:
           type: ["string", "null"]
         activo:
           type: boolean
+        imagen:
+          type: ["string", "null"]
         creado_en:
           type: string
         stock_estado:
@@ -933,6 +1018,8 @@ components:
           type: integer
         categoria_id:
           type: integer
+        imagen:
+          type: string
 
     ProductoUpdate:
       type: object
@@ -953,6 +1040,8 @@ components:
           type: ["integer", "null"]
         activo:
           type: boolean
+        imagen:
+          type: ["string", "null"]
 
     DeleteProductoResult:
       type: object
@@ -1006,7 +1095,7 @@ components:
         producto_id:
           type: integer
         cantidad:
-          type: integer
+          type: number
         precio_unitario:
           type: number
         subtotal:
@@ -1014,12 +1103,12 @@ components:
 
     VentaInput:
       type: object
-      required: [total, metodo_pago, detalle]
+      required: [metodo_pago, detalle]
       properties:
         apertura_caja_id:
           type: ["integer", "null"]
-        total:
-          type: number
+        nombre_comprador:
+          type: ["string", "null"]
         metodo_pago:
           type: string
           enum: [efectivo, tarjeta, transferencia, mixto]
@@ -1042,16 +1131,22 @@ components:
           type: integer
         producto_nombre:
           type: ["string", "null"]
+        unidad_tipo:
+          type: string
         cantidad:
-          type: integer
+          type: number
         precio_unitario:
           type: number
         subtotal:
           type: number
+        cantidad_devuelta:
+          type: number
+        cantidad_devolvible:
+          type: number
 
     Venta:
       type: object
-      required: [id, numero_ticket, total, metodo_pago, fecha, anulada]
+      required: [id, numero_ticket, subtotal, ajuste_redondeo, total, metodo_pago, fecha, anulada]
       properties:
         id:
           type: integer
@@ -1063,20 +1158,51 @@ components:
           type: ["string", "null"]
         apertura_caja_id:
           type: ["integer", "null"]
+        subtotal:
+          type: number
+        ajuste_redondeo:
+          type: number
         total:
           type: number
         metodo_pago:
           type: string
+        monto_efectivo:
+          type: number
+        monto_tarjeta:
+          type: number
+        monto_transferencia:
+          type: number
         detalle_pago_mixto:
           type: ["string", "null"]
         fecha:
           type: string
         anulada:
           type: boolean
+        anulada_por_usuario:
+          type: ["integer", "null"]
+        fecha_anulacion:
+          type: ["string", "null"]
+        nombre_comprador:
+          type: ["string", "null"]
+        total_devuelto:
+          type: number
+        total_reembolsado_efectivo:
+          type: number
+        total_reembolsado_tarjeta:
+          type: number
+        total_reembolsado_transferencia:
+          type: number
+        estado:
+          type: string
+          enum: [sin_devoluciones, devuelta_parcialmente, devuelta_totalmente, anulada]
+        detalle:
+          type: array
+          items:
+            $ref: "#/components/schemas/DetalleVenta"
 
     VentaDetalle:
       type: object
-      required: [id, numero_ticket, total, metodo_pago, fecha, anulada, detalle]
+      required: [id, numero_ticket, subtotal, ajuste_redondeo, total, metodo_pago, fecha, anulada, detalle]
       properties:
         id:
           type: integer
@@ -1088,15 +1214,47 @@ components:
           type: ["string", "null"]
         apertura_caja_id:
           type: ["integer", "null"]
+        subtotal:
+          type: number
+        ajuste_redondeo:
+          type: number
         total:
           type: number
         metodo_pago:
           type: string
+        monto_efectivo:
+          type: number
+        monto_tarjeta:
+          type: number
+        monto_transferencia:
+          type: number
         detalle_pago_mixto:
           type: ["string", "null"]
         fecha:
           type: string
         anulada:
+          type: boolean
+        anulada_por_usuario:
+          type: ["integer", "null"]
+        fecha_anulacion:
+          type: ["string", "null"]
+        nombre_comprador:
+          type: ["string", "null"]
+        total_devuelto:
+          type: number
+        total_reembolsado_efectivo:
+          type: number
+        total_reembolsado_tarjeta:
+          type: number
+        total_reembolsado_transferencia:
+          type: number
+        estado:
+          type: string
+          enum: [sin_devoluciones, devuelta_parcialmente, devuelta_totalmente, anulada]
+        fecha_vencimiento:
+          type: string
+          format: date-time
+        esta_vencida:
           type: boolean
         detalle:
           type: array
@@ -1111,16 +1269,24 @@ components:
         producto_id:
           type: integer
         cantidad:
-          type: integer
+          type: number
+        reingresa_stock:
+          type: boolean
+          default: true
 
     DevolucionInput:
       type: object
-      required: [venta_id, detalle]
+      required: [venta_id, motivo, nombre_comprador, detalle]
       properties:
         venta_id:
           type: integer
         motivo:
           type: string
+        nombre_comprador:
+          type: string
+        metodo_reembolso:
+          type: string
+          enum: [efectivo, tarjeta, transferencia]
         detalle:
           type: array
           items:
@@ -1138,8 +1304,16 @@ components:
           type: integer
         producto_nombre:
           type: ["string", "null"]
+        unidad_tipo:
+          type: string
         cantidad:
-          type: integer
+          type: number
+        precio_unitario:
+          type: number
+        subtotal:
+          type: number
+        reingresa_stock:
+          type: boolean
 
     Devolucion:
       type: object
@@ -1153,16 +1327,105 @@ components:
           type: ["integer", "null"]
         usuario_id:
           type: ["integer", "null"]
+        apertura_caja_id:
+          type: ["integer", "null"]
         usuario_nombre:
           type: ["string", "null"]
         motivo:
-          type: ["string", "null"]
+          type: string
+        tipo:
+          type: string
+          enum: [devolucion, cambio]
+        nombre_comprador:
+          type: string
+        metodo_reembolso:
+          type: string
+          enum: [efectivo, tarjeta, transferencia]
+        subtotal:
+          type: number
+        ajuste_redondeo:
+          type: number
+        total_reembolso:
+          type: number
+        venta_nueva_id:
+          type: ["integer", "null"]
+        numero_ticket_nuevo:
+          type: ["integer", "null"]
         fecha:
           type: string
+          format: date-time
         detalle:
           type: array
           items:
             $ref: "#/components/schemas/DetalleDevolucion"
+        detalle_nueva_venta:
+          type: array
+          items:
+            $ref: "#/components/schemas/DetalleVenta"
+
+    CambioInput:
+      type: object
+      required: [venta_id, producto_devuelto_id, cantidad_devuelta, producto_nuevo_id, cantidad_nueva, motivo, nombre_comprador]
+      properties:
+        venta_id:
+          type: integer
+        producto_devuelto_id:
+          type: integer
+        cantidad_devuelta:
+          type: number
+        reingresa_stock:
+          type: boolean
+          default: true
+        producto_nuevo_id:
+          type: integer
+        cantidad_nueva:
+          type: number
+        motivo:
+          type: string
+        nombre_comprador:
+          type: string
+        metodo_pago_diferencia:
+          type: string
+          enum: [efectivo, tarjeta, transferencia, mixto]
+        metodo_reembolso_diferencia:
+          type: string
+          enum: [efectivo, tarjeta, transferencia]
+        detalle_pago_mixto:
+          type: string
+
+    CambioResult:
+      type: object
+      required: [devolucion_id, venta_origen_id, venta_nueva_id, numero_ticket_nuevo, diferencia, tipo_diferencia]
+      properties:
+        devolucion_id:
+          type: integer
+        venta_origen_id:
+          type: integer
+        numero_ticket_origen:
+          type: ["integer", "null"]
+        venta_nueva_id:
+          type: integer
+        numero_ticket_nuevo:
+          type: integer
+        producto_devuelto:
+          type: object
+        producto_nuevo:
+          type: object
+        diferencia:
+          type: number
+        tipo_diferencia:
+          type: string
+          enum: [equilibrado, cliente_paga, negocio_devuelve]
+        metodo_pago_diferencia:
+          type: ["string", "null"]
+        metodo_reembolso_diferencia:
+          type: ["string", "null"]
+        nombre_comprador:
+          type: string
+        motivo:
+          type: string
+        fecha:
+          type: string
 
     # CAJA
     AperturaCajaInput:
@@ -1207,6 +1470,14 @@ components:
           type: integer
         total_esperado:
           type: number
+        suma_redondeos:
+          type: number
+        total_reembolsado_efectivo:
+          type: number
+        total_reembolsado_tarjeta:
+          type: number
+        total_reembolsado_transferencia:
+          type: number
 
     CierreCajaInput:
       type: object
@@ -1217,7 +1488,7 @@ components:
 
     CierreCaja:
       type: object
-      required: [id, apertura_caja_id, total_esperado, total_contado, diferencia, fecha_cierre]
+      required: [id, apertura_caja_id, total_esperado, total_contado, diferencia, suma_redondeos, total_reembolsado_efectivo, fecha_cierre]
       properties:
         id:
           type: integer
@@ -1233,6 +1504,10 @@ components:
           type: number
         diferencia:
           type: number
+        suma_redondeos:
+          type: number
+        total_reembolsado_efectivo:
+          type: number
         fecha_cierre:
           type: string
         snapshot_stock:
@@ -1243,15 +1518,27 @@ components:
     # DASHBOARD
     Dashboard:
       type: object
-      required: [ventas_hoy, ingresos_hoy, ventas_mes, ingresos_mes, productos_activos, productos_stock_bajo, productos_agotados]
+      required: [ventas_hoy, ingresos_hoy, ventas_mes, ingresos_mes, total_devuelto_hoy, total_devuelto_mes, ingresos_brutos_hoy, ingresos_brutos_mes, productos_activos, productos_stock_bajo, productos_agotados]
       properties:
         ventas_hoy:
           type: integer
         ingresos_hoy:
           type: number
+        ingresos_netos_hoy:
+          type: number
+        ingresos_brutos_hoy:
+          type: number
+        total_devuelto_hoy:
+          type: number
         ventas_mes:
           type: integer
         ingresos_mes:
+          type: number
+        ingresos_netos_mes:
+          type: number
+        ingresos_brutos_mes:
+          type: number
+        total_devuelto_mes:
           type: number
         productos_activos:
           type: integer
@@ -1264,13 +1551,15 @@ components:
 
     VentaDia:
       type: object
-      required: [fecha, total_ventas, ingresos]
+      required: [fecha, total_ventas, ingresos, total_devuelto]
       properties:
         fecha:
           type: string
         total_ventas:
           type: integer
         ingresos:
+          type: number
+        total_devuelto:
           type: number
 
     ProductoTop:
@@ -1298,3 +1587,19 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Producto"
+
+    UploadImageInput:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: string
+        filename:
+          type: string
+
+    ImageUploadResult:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string

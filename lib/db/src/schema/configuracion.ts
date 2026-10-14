@@ -19,6 +19,11 @@ export const configuracionTable = sqliteTable("configuracion", {
   fecha_instalacion: text("fecha_instalacion"),
   activa_kg: integer("activa_kg", { mode: "boolean" }).notNull().default(false),
   mostrar_decimales: integer("mostrar_decimales", { mode: "boolean" }).notNull().default(false),
+  activa_cajon: integer("activa_cajon", { mode: "boolean" }).notNull().default(false),
+  redondeo_activo: integer("redondeo_activo", { mode: "boolean" }).notNull().default(true),
+  redondeo_multiplo: integer("redondeo_multiplo").notNull().default(50),
+  horas_limite_devolucion: integer("horas_limite_devolucion").notNull().default(48),
+  devoluciones_requieren_ticket: integer("devoluciones_requieren_ticket", { mode: "boolean" }).notNull().default(true),
 });
 
 export const insertConfiguracionSchema = createInsertSchema(configuracionTable).omit({ id: true });

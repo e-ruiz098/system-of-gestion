@@ -35,8 +35,14 @@ export default function Login() {
             setLocation('/venta');
           }
         },
-        onError: () => {
-          setError('Credenciales incorrectas');
+        onError: (err: any) => {
+          if (err?.status === 401) {
+            setError('Credenciales incorrectas');
+          } else if (err instanceof TypeError || err?.name === "TypeError") {
+            setError('Error de conexión: no se pudo conectar con el servidor backend. Verifica que el servidor API esté ejecutándose.');
+          } else {
+            setError(err?.data?.error || err?.message || 'Error inesperado al iniciar sesión');
+          }
         }
       }
     );

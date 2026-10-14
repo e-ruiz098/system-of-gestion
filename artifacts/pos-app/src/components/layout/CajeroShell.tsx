@@ -22,7 +22,9 @@ export function CajeroShell({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const [location, setLocation] = useLocation();
   const logoutMutation = useLogout();
-  const { data: cajaActiva } = useGetCajaActiva({ query: { queryKey: ["/api/caja/activa"] } } as any);
+  const { data: cajaActiva } = useGetCajaActiva({
+    query: { queryKey: ["/api/caja/activa"], retry: false },
+  } as any);
 
   const isActive = (href: string) =>
     location === href || location.startsWith(href + "/");

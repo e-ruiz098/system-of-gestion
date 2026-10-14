@@ -4,6 +4,14 @@ import { db, categoriasTable } from "@workspace/db";
 
 const router: IRouter = Router();
 
+function requireAuth(req: any, res: any): boolean {
+  if (!req.session?.userId) {
+    res.status(401).json({ error: "Not authenticated" });
+    return false;
+  }
+  return true;
+}
+
 function requireAdmin(req: any, res: any): boolean {
   if (req.session?.rol !== "admin") {
     res.status(403).json({ error: "Admin only" });
@@ -12,7 +20,15 @@ function requireAdmin(req: any, res: any): boolean {
   return true;
 }
 
-router.get("/categorias", async (_req, res): Promise<void> => {
+function parseId(raw: string | string[]): number | null {
+  const s = Array.isArray(raw) ? raw[0] : raw;
+  const n = parseInt(s, 10);
+  return Number.isNaN(n) || n <= 0 ? null : n;
+}
+
+// Any authenticated user can list categories (needed for the POS sale screen)
+router.get("/categorias", async (req, res): Promise<void> => {
+  if (!requireAuth(req, res)) return;
   const cats = await db.select().from(categoriasTable).orderBy(categoriasTable.nombre);
   res.json(cats);
 });
@@ -20,35 +36,48 @@ router.get("/categorias", async (_req, res): Promise<void> => {
 router.post("/categorias", async (req, res): Promise<void> => {
   if (!requireAdmin(req, res)) return;
   const { nombre } = req.body ?? {};
-  if (!nombre) {
+  if (!nombre || typeof nombre !== "string" || nombre.trim().length === 0) {
     res.status(400).json({ error: "nombre is required" });
     return;
   }
-  const [cat] = await db.insert(categoriasTable).values({ nombre }).returning();
+  if (nombre.length > 100) {
+    res.status(400).json({ error: "nombre demasiado largo (máximo 100 caracteres)" });
+    return;
+  }
+  const [cat] = await db.insert(categoriasTable).values({ nombre: nombre.trim() }).returning();
   res.status(201).json(cat);
 });
 
 router.put("/categorias/:id", async (req, res): Promise<void> => {
   if (!requireAdmin(req, res)) return;
-  const rawId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const id = parseInt(rawId, 10);
+  const id = parseId(req.params.id);
+  if (id === null) { res.status(400).json({ error: "ID inválido" }); return; }
+
   const { nombre } = req.body ?? {};
-  if (!nombre) {
+  if (!nombre || typeof nombre !== "string" || nombre.trim().length === 0) {
     res.status(400).json({ error: "nombre is required" });
     return;
   }
-  const [cat] = await db.update(categoriasTable).set({ nombre }).where(eq(categoriasTable.id, id)).returning();
-  if (!cat) {
-    res.status(404).json({ error: "Category not found" });
+  if (nombre.length > 100) {
+    res.status(400).json({ error: "nombre demasiado largo (máximo 100 caracteres)" });
     return;
   }
+
+  const [cat] = await db
+    .update(categoriasTable)
+    .set({ nombre: nombre.trim() })
+    .where(eq(categoriasTable.id, id))
+    .returning();
+
+  if (!cat) { res.status(404).json({ error: "Category not found" }); return; }
   res.json(cat);
 });
 
 router.delete("/categorias/:id", async (req, res): Promise<void> => {
   if (!requireAdmin(req, res)) return;
-  const rawId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-  const id = parseInt(rawId, 10);
+  const id = parseId(req.params.id);
+  if (id === null) { res.status(400).json({ error: "ID inválido" }); return; }
+
   await db.delete(categoriasTable).where(eq(categoriasTable.id, id));
   res.json({ ok: true });
 });

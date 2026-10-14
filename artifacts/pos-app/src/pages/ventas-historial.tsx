@@ -24,7 +24,7 @@ export default function VentasHistorial() {
   );
 
   const handleAnular = (id: number) => {
-    if (confirm("¿Está seguro que desea anular esta venta? El stock será devuelto y el monto descontado de la caja actual.")) {
+    if (confirm("¿Está seguro que desea anular esta venta? Se restituirá el stock y el cierre dejará de considerar el cobro de esta venta. Solo se puede anular mientras su caja siga abierta.")) {
       anularMutation.mutate({ id }, {
         onSuccess: () => queryClient.invalidateQueries({ queryKey: ['/api/ventas'] })
       });
@@ -71,11 +71,14 @@ export default function VentasHistorial() {
                 <TableCell className="capitalize">{metodoPagoLabel[v.metodo_pago ?? ''] ?? v.metodo_pago}</TableCell>
                 <TableCell className="text-right font-bold">{formatMoney(v.total)}</TableCell>
                 <TableCell className="text-center">
-                  {v.anulada ? (
-                    <Badge variant="destructive" className="bg-destructive/20 text-destructive border-none">Anulada</Badge>
-                  ) : (
-                    <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-none">Completada</Badge>
-                  )}
+                  <Badge
+                    variant={v.estado === 'anulada' ? 'destructive' : 'outline'}
+                    className={v.estado === 'anulada' ? 'bg-destructive/20 text-destructive border-none' : 'bg-emerald-500/10 text-emerald-600 border-none'}
+                  >
+                    {v.estado === 'anulada' ? 'Anulada' :
+                      v.estado === 'devuelta_totalmente' ? 'Devuelta totalmente' :
+                        v.estado === 'devuelta_parcialmente' ? 'Devuelta parcialmente' : 'Sin devoluciones'}
+                  </Badge>
                 </TableCell>
                 <TableCell className="text-right">
                   <Button
@@ -86,7 +89,7 @@ export default function VentasHistorial() {
                   >
                     <FileText className="w-4 h-4 text-muted-foreground" />
                   </Button>
-                  {!v.anulada && (
+                  {!v.anulada && (v.total_devuelto ?? 0) === 0 && (
                     <Button
                       variant="ghost"
                       size="icon"
@@ -144,9 +147,11 @@ export default function VentasHistorial() {
                 </div>
                 <div>
                   <p className="text-muted-foreground">Estado</p>
-                  {detalle.anulada
-                    ? <Badge variant="destructive" className="bg-destructive/20 text-destructive border-none text-xs">Anulada</Badge>
-                    : <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-none text-xs">Completada</Badge>}
+                  <Badge variant={detalle.estado === 'anulada' ? 'destructive' : 'outline'} className="text-xs">
+                    {detalle.estado === 'anulada' ? 'Anulada' :
+                      detalle.estado === 'devuelta_totalmente' ? 'Devuelta totalmente' :
+                        detalle.estado === 'devuelta_parcialmente' ? 'Devuelta parcialmente' : 'Sin devoluciones'}
+                  </Badge>
                 </div>
                 {detalle.metodo_pago === 'mixto' && detalle.detalle_pago_mixto && (() => {
                   try {
@@ -155,7 +160,10 @@ export default function VentasHistorial() {
                       <div className="col-span-2">
                         <p className="text-muted-foreground">Detalle pago mixto</p>
                         <p className="font-medium">
-                          {Object.entries(mixto).map(([k, v]) => `${metodoPagoLabel[k] ?? k}: ${formatMoney(v as number)}`).join(' · ')}
+                          {Object.entries(mixto)
+                            .filter(([k, v]) => (k === 'efectivo' || k === 'tarjeta' || k === 'transferencia') && typeof v === 'number')
+                            .map(([k, v]) => `${metodoPagoLabel[k] ?? k}: ${formatMoney(v as number)}`)
+                            .join(' · ')}
                         </p>
                       </div>
                     );
@@ -192,9 +200,32 @@ export default function VentasHistorial() {
 
               <Separator />
 
-              <div className="flex justify-between items-center font-bold text-lg">
-                <span>Total</span>
-                <span>{formatMoney(detalle.total)}</span>
+              {(detalle.total_devuelto ?? 0) > 0 && (
+                <div className="flex justify-between items-center text-sm">
+                  <span className="text-muted-foreground">Total devuelto</span>
+                  <span className="font-mono text-destructive">−{formatMoney(detalle.total_devuelto)}</span>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground">Subtotal</span>
+                  <span>{formatMoney(
+                    detalle.subtotal === 0 && detalle.ajuste_redondeo === 0
+                      ? detalle.total
+                      : detalle.subtotal ?? detalle.total,
+                  )}</span>
+                </div>
+                {detalle.ajuste_redondeo !== 0 && detalle.ajuste_redondeo !== undefined && (
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-muted-foreground">Redondeo</span>
+                    <span className="font-mono">{detalle.ajuste_redondeo > 0 ? '+' : ''}{formatMoney(detalle.ajuste_redondeo)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between items-center font-bold text-lg">
+                  <span>Total cobrado</span>
+                  <span>{formatMoney(detalle.total)}</span>
+                </div>
               </div>
             </div>
           )}

@@ -23,6 +23,7 @@ export default function Cierres() {
               <TableHead>Fecha de Cierre</TableHead>
               <TableHead>Cajero</TableHead>
               <TableHead className="text-right">Esperado</TableHead>
+              <TableHead className="text-right">Devoluciones efectivo</TableHead>
               <TableHead className="text-right">Contado</TableHead>
               <TableHead className="text-right">Diferencia</TableHead>
             </TableRow>
@@ -35,6 +36,7 @@ export default function Cierres() {
                 </TableCell>
                 <TableCell>{c.usuario_nombre}</TableCell>
                 <TableCell className="text-right font-mono text-muted-foreground">{formatMoney(c.total_esperado)}</TableCell>
+                <TableCell className="text-right font-mono text-destructive">−{formatMoney(c.total_reembolsado_efectivo || 0)}</TableCell>
                 <TableCell className="text-right font-mono font-bold">{formatMoney(c.total_contado)}</TableCell>
                 <TableCell className={`text-right font-mono font-bold ${
                   c.diferencia === 0 ? 'text-emerald-500' :
@@ -46,7 +48,7 @@ export default function Cierres() {
               </TableRow>
             ))}
             {cierres?.length === 0 && (
-              <TableRow><TableCell colSpan={5} className="text-center py-8 text-muted-foreground">No hay cierres registrados.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={6} className="text-center py-8 text-muted-foreground">No hay cierres registrados.</TableCell></TableRow>
             )}
           </TableBody>
         </Table>

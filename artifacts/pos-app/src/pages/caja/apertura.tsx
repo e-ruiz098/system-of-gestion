@@ -13,7 +13,7 @@ export default function CajaApertura() {
   const abrirMutation = useAbrirCaja();
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
-  const { data: cajaActiva, isLoading } = useGetCajaActiva();
+  const { data: cajaActiva, isLoading } = useGetCajaActiva({ query: { retry: false } });
 
   if (isLoading) return null;
 

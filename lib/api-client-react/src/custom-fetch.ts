@@ -83,12 +83,48 @@ function mergeHeaders(...sources: Array<HeadersInit | undefined>): Headers {
 
   for (const source of sources) {
     if (!source) continue;
-    new Headers(source).forEach((value, key) => {
+    const sourceHeaders = new Headers(source);
+    sourceHeaders.forEach((value, key) => {
       headers.set(key, value);
     });
   }
 
   return headers;
+}
+
+// Polyfill for Headers.entries() for Orval compatibility
+if (typeof Headers !== 'undefined' && !('entries' in Headers.prototype)) {
+  Object.defineProperty(Headers.prototype, 'entries', {
+    value: function(this: Headers) {
+      const entries: [string, string][] = [];
+      this.forEach((value, key) => {
+        entries.push([key, value]);
+      });
+      return entries[Symbol.iterator]();
+    },
+    writable: true,
+    configurable: true,
+  });
+}
+
+// Helper to convert Headers to plain object for Orval compatibility
+export function headersToObject(headers: HeadersInit): Record<string, string> {
+  const result: Record<string, string> = {};
+  const h = new Headers(headers);
+  h.forEach((value, key) => {
+    result[key] = value;
+  });
+  return result;
+}
+
+// Helper to convert Headers to entries for Object.fromEntries (Orval compatibility)
+export function headersToEntries(headers: HeadersInit): [string, string][] {
+  const entries: [string, string][] = [];
+  const h = new Headers(headers);
+  h.forEach((value, key) => {
+    entries.push([key, value]);
+  });
+  return entries;
 }
 
 function getMediaType(headers: Headers): string | null {
@@ -360,7 +396,7 @@ export async function customFetch<T = unknown>(
 
   const requestInfo = { method, url: resolveUrl(input) };
 
-  const response = await fetch(input, { ...init, method, headers });
+  const response = await fetch(input, { credentials: "include", ...init, method, headers });
 
   if (!response.ok) {
     const errorData = await parseErrorBody(response, method);
