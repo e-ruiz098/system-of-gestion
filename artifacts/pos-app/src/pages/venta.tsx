@@ -768,45 +768,9 @@ export default function Venta() {
                   {/* Nombre */}
                   <div className="px-2 py-2 font-medium text-sm truncate">{item.nombre}</div>
 
-                  {/* Cantidad con controles [-] [input] [+] */}
-                  <div className="px-2 py-1.5 flex items-center justify-center">
-                    <div className="flex items-center bg-background border border-border rounded overflow-hidden shadow-sm">
-                      <button
-                        type="button"
-                        onClick={() => updateQty(item.id, -1)}
-                        className="px-2 py-1.5 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                        title="Restar 1 (al llegar a 0 se elimina)"
-                      >
-                        <Minus className="w-3 h-3" />
-                      </button>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={qtyDisplay.get(item.id) ?? String(item.cartQty)}
-                        onChange={e => {
-                          const val = e.target.value;
-                          if (/[^0-9.,]/.test(val)) return;
-                          handleQtyChange(item.id, val);
-                        }}
-                        onBlur={e => commitQty(item.id, e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            commitQty(item.id, (e.target as HTMLInputElement).value);
-                            barcodeScanner.focus();
-                          }
-                        }}
-                        className="w-14 text-center font-bold text-sm bg-transparent border-x border-border py-1 focus:outline-none focus:bg-muted/30"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => updateQty(item.id, 1)}
-                        className="px-2 py-1.5 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                        title="Sumar 1"
-                      >
-                        <Plus className="w-3 h-3" />
-                      </button>
-                    </div>
+                  {/* Cantidad pura (sin controles - y +) */}
+                  <div className="px-2 py-2 text-center font-bold text-sm font-mono text-foreground">
+                    {item.cartQty}
                   </div>
 
                   {/* Precio unitario */}
@@ -823,34 +787,21 @@ export default function Venta() {
         {/* ── RIGHT PANEL ─────────────────────────────────────────────── */}
         <div className="w-80 shrink-0 flex flex-col border-l border-border bg-card">
 
-          {/* ── SECCIÓN: "Escanear Código" + "Cantidad" justo al lado ── */}
-          <div className="p-3 border-b border-border bg-muted/10 space-y-2">
+          {/* ── SECCIÓN: "CANTIDAD" (Izquierda) + "CÓDIGO / LECTOR" (Derecha) ── */}
+          <div className="p-3 border-b border-border bg-muted/10 space-y-2 shrink-0">
             <div className="flex items-center justify-between">
               <Label className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-primary">
-                <Barcode className="w-4 h-4" /> Escanear Código
+                <Barcode className="w-4 h-4" /> Terminal POS
               </Label>
               <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1 bg-emerald-500/10 px-1.5 py-0.5 rounded">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Listo (F2)
+                Lector Listo (F2)
               </span>
             </div>
 
-            {/* Fila: Campo Escanear Código + Campo chico de Cantidad */}
+            {/* Fila: [ CANTIDAD ] (Izquierda) | [ CÓDIGO / LECTOR ] (Derecha) */}
             <div className="flex items-center gap-2">
-              <div className="relative flex-1 min-w-0">
-                <Input
-                  ref={barcodeScanner.inputRef}
-                  value={barcodeScanner.barcode}
-                  onChange={barcodeScanner.handleChange}
-                  onKeyDown={barcodeScanner.handleKeyDown}
-                  placeholder="Código de barras..."
-                  className="h-10 text-sm font-mono font-bold bg-background border-primary/50 focus:border-primary focus:ring-2 focus:ring-primary/20 pr-8"
-                  autoComplete="off"
-                />
-                <ScanBarcode className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-              </div>
-
-              {/* Campo chico de Cantidad (F4 para acceder y seleccionar todo) */}
+              {/* IZQUIERDA: Campo de Cantidad (F4 para acceder) */}
               <div className="w-20 shrink-0 relative">
                 <Input
                   ref={scanQtyInputRef}
@@ -882,10 +833,24 @@ export default function Venta() {
                   F4
                 </span>
               </div>
+
+              {/* DERECHA: Campo Escanear / Escribir Código */}
+              <div className="relative flex-1 min-w-0">
+                <Input
+                  ref={barcodeScanner.inputRef}
+                  value={barcodeScanner.barcode}
+                  onChange={barcodeScanner.handleChange}
+                  onKeyDown={barcodeScanner.handleKeyDown}
+                  placeholder="Escanear o escribir código..."
+                  className="h-10 text-sm font-mono font-bold bg-background border-primary/50 focus:border-primary focus:ring-2 focus:ring-primary/20 pr-8"
+                  autoComplete="off"
+                />
+                <ScanBarcode className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+              </div>
             </div>
 
             <p className="text-[10px] text-muted-foreground leading-tight flex items-center justify-between">
-              <span>Lector USB o Enter para escanear.</span>
+              <span>Lector agrega automático. Manual: Enter.</span>
               {parseFloat(scanQty.replace(',', '.')) > 1 && (
                 <span className="text-primary font-semibold">
                   Cantidad: {scanQty}
@@ -894,16 +859,16 @@ export default function Venta() {
             </p>
           </div>
 
-          {/* ── PANEL: Rediseño "Último producto cargado" (Foto grande arriba, solo nombre abajo) ── */}
-          <div className="flex-1 flex flex-col p-3 border-b border-border min-h-0 overflow-y-auto">
-            <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-2 text-center">
+          {/* ── PANEL: Rediseño "Último producto cargado" (Sin scroll innecesario) ── */}
+          <div className="flex-1 flex flex-col p-3 border-b border-border min-h-0 overflow-hidden items-center justify-center">
+            <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-1 text-center shrink-0">
               Último producto cargado
             </span>
 
             {lastAdded ? (
-              <div className="flex-1 flex flex-col items-center justify-center">
-                {/* Foto ocupando bien el ancho del panel */}
-                <div className="w-full aspect-square max-h-56 rounded-lg border border-border bg-muted/20 flex items-center justify-center overflow-hidden shadow-sm p-2">
+              <div className="flex-1 flex flex-col items-center justify-center min-h-0 w-full">
+                {/* Foto contenida en área fija sin provocar scroll */}
+                <div className="w-full max-h-40 flex-1 rounded-lg border border-border bg-muted/20 flex items-center justify-center overflow-hidden shadow-sm p-2">
                   {lastAdded.imagen ? (
                     <img
                       src={lastAdded.imagen}
@@ -912,23 +877,23 @@ export default function Venta() {
                     />
                   ) : (
                     <div className="flex flex-col items-center justify-center text-muted-foreground/40">
-                      <Package className="w-16 h-16 mb-2" />
+                      <Package className="w-12 h-12 mb-1" />
                       <span className="text-xs">Sin imagen</span>
                     </div>
                   )}
                 </div>
 
-                {/* Debajo de la foto: SOLO el nombre del producto (sin código ni precio) */}
-                <div className="mt-3 text-center w-full px-1">
-                  <h4 className="text-base font-bold text-foreground leading-snug line-clamp-3">
+                {/* Debajo de la foto: SOLO el nombre del producto */}
+                <div className="mt-2 text-center w-full px-1 shrink-0">
+                  <h4 className="text-sm font-bold text-foreground leading-snug line-clamp-2">
                     {lastAdded.nombre}
                   </h4>
                 </div>
               </div>
             ) : (
-              <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground/30 select-none py-6">
-                <div className="w-full aspect-square max-h-56 rounded-lg border-2 border-dashed border-border flex flex-col items-center justify-center p-4">
-                  <Package className="w-14 h-14 mb-2 text-muted-foreground/30" />
+              <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground/30 select-none py-2 w-full">
+                <div className="w-full max-h-40 flex-1 rounded-lg border-2 border-dashed border-border flex flex-col items-center justify-center p-3">
+                  <Package className="w-12 h-12 mb-1 text-muted-foreground/30" />
                   <p className="text-xs text-center font-medium">Esperando primer escaneo...</p>
                 </div>
               </div>

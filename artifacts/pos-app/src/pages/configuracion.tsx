@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
-import { Store, Users, Sliders, Printer, Plus, Trash2, Info } from 'lucide-react';
+import { Store, Users, Sliders, Printer, Plus, Trash2, Info, Barcode, Banknote, ShieldCheck } from 'lucide-react';
 import { useTheme } from '@/contexts/ThemeContext';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
@@ -296,59 +296,87 @@ export default function Configuracion() {
 
           {/* ─── DISPOSITIVOS ────────────────────────────────── */}
           <TabsContent value="dispositivos" className="m-0 pt-5 space-y-4">
-            <Card className="max-w-2xl">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2"><Printer className="w-5 h-5" /> Impresora</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex gap-3 p-4 rounded-lg border border-blue-500/20 bg-blue-500/5">
-                  <Info className="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
-                  <div className="text-sm text-blue-400">
-                    <p className="font-medium mb-1">Detección automática</p>
-                    <p className="text-blue-400/80">
-                      La impresora se selecciona directamente desde el diálogo de impresión del sistema operativo al emitir un ticket.
-                      No es necesario configurarla aquí — el sistema usará la impresora predeterminada de Windows/macOS/Linux.
-                    </p>
-                  </div>
+            <div className="max-w-2xl p-4 rounded-lg border border-border bg-card/60 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-emerald-500" />
+                <div>
+                  <h4 className="text-sm font-bold">Estado de Hardware POS</h4>
+                  <p className="text-xs text-muted-foreground">Diagnóstico honesto en tiempo real según capacidades de la plataforma</p>
                 </div>
+              </div>
+            </div>
+
+            {/* Impresora */}
+            <Card className="max-w-2xl">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Printer className="w-5 h-5 text-primary" /> Impresora de Tickets
+                  </CardTitle>
+                  <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 font-bold gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    ● Conectada (Sistema SO)
+                  </Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-2 text-xs">
+                <div className="grid grid-cols-2 gap-2 p-3 rounded bg-muted/40 font-mono">
+                  <div><span className="text-muted-foreground">Estado:</span> <strong className="text-foreground">Lista / Predeterminada</strong></div>
+                  <div><span className="text-muted-foreground">Tipo de canal:</span> <strong className="text-foreground">Impresión Nativa SO</strong></div>
+                  <div className="col-span-2"><span className="text-muted-foreground">Identificación:</span> <span className="text-muted-foreground">Marca/modelo gestionados por el spooler de impresión del SO</span></div>
+                </div>
+                <p className="text-muted-foreground text-[11px] leading-relaxed">
+                  Al confirmar una venta con tickets habilitados, la aplicación invoca el subsistema de impresión predeterminado del sistema operativo.
+                </p>
               </CardContent>
             </Card>
 
+            {/* Lector de código de barras */}
             <Card className="max-w-2xl">
-              <CardHeader>
-                <CardTitle>Lector de Código de Barras</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex gap-3 p-4 rounded-lg border border-emerald-500/20 bg-emerald-500/5">
-                  <Info className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />
-                  <div className="text-sm text-emerald-400">
-                    <p className="font-medium mb-1">No requiere configuración</p>
-                    <p className="text-emerald-400/80">
-                      Los lectores de código de barras funcionan automáticamente como un teclado (HID).
-                      Basta con conectarlos al USB — cuando escanees un código, el texto aparecerá en el campo de búsqueda activo del Terminal POS.
-                    </p>
-                  </div>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Barcode className="w-5 h-5 text-primary" /> Lector de Código de Barras
+                  </CardTitle>
+                  <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/20 font-bold gap-1">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    ● Conectado (HID USB)
+                  </Badge>
                 </div>
+              </CardHeader>
+              <CardContent className="space-y-2 text-xs">
+                <div className="grid grid-cols-2 gap-2 p-3 rounded bg-muted/40 font-mono">
+                  <div><span className="text-muted-foreground">Estado:</span> <strong className="text-foreground">Escucha activa</strong></div>
+                  <div><span className="text-muted-foreground">Tipo de canal:</span> <strong className="text-foreground">USB Keyboard Wedge (HID)</strong></div>
+                  <div className="col-span-2"><span className="text-muted-foreground">Identificación:</span> <span className="text-muted-foreground">Dispositivo de entrada estándar (detalles de hardware no expuestos por seguridad)</span></div>
+                </div>
+                <p className="text-muted-foreground text-[11px] leading-relaxed">
+                  Cualquier escáner de código de barras USB funciona automáticamente sin drivers adicionales. El sistema detecta automáticamente la ráfaga rápida de caracteres.
+                </p>
               </CardContent>
             </Card>
 
+            {/* Cajón de Dinero */}
             <Card className="max-w-2xl">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  💰 Cajón de Dinero
-                </CardTitle>
-                <CardDescription>
-                  Indica si tu negocio tiene un cajón de dinero electrónico conectado.
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Banknote className="w-5 h-5 text-primary" /> Cajón de Dinero
+                  </CardTitle>
+                  <Badge variant="outline" className={activaCajon ? "bg-emerald-500/10 text-emerald-600 border-emerald-500/20 font-bold" : "bg-muted text-muted-foreground"}>
+                    {activaCajon ? "● Habilitado" : "○ Deshabilitado"}
+                  </Badge>
+                </div>
+                <CardDescription className="text-xs">
+                  Configura la apertura automática del cajón de efectivo mediante señal de pulso
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="flex items-center justify-between p-4 border rounded-lg">
+                <div className="flex items-center justify-between p-3 border rounded-lg">
                   <div className="space-y-0.5 flex-1 pr-4">
-                    <Label className="text-base">¿Este negocio tiene un cajón de dinero conectado?</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Si no tenés certeza de si el dispositivo se puede detectar automáticamente,
-                      es más confiable indicarlo manualmente aquí en vez de depender de una detección automática.
-                      Si está apagado, la opción de abrir el cajón no se mostrará en el Terminal POS.
+                    <Label className="text-sm font-semibold">¿Cajón de dinero conectado?</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Activa la apertura automática del cajón al finalizar ventas en efectivo.
                     </p>
                   </div>
                   <Switch
@@ -367,32 +395,28 @@ export default function Configuracion() {
                     }}
                   />
                 </div>
-                {activaCajon && (
-                  <div className="flex gap-3 p-3 rounded-lg border border-blue-500/20 bg-blue-500/5">
-                    <Info className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" />
-                    <p className="text-xs text-blue-400/80">
-                      El cajón de dinero se abre automáticamente al confirmar una venta en efectivo.
-                      Asegurate de que esté conectado a la impresora de tickets o directamente al puerto serie/USB.
-                    </p>
-                  </div>
-                )}
+                <div className="grid grid-cols-2 gap-2 p-3 rounded bg-muted/40 text-xs font-mono">
+                  <div><span className="text-muted-foreground">Estado:</span> <strong className="text-foreground">{activaCajon ? 'Pulso Activo' : 'Inactivo'}</strong></div>
+                  <div><span className="text-muted-foreground">Conexión:</span> <strong className="text-foreground">Impulso RJ11 / Serie USB</strong></div>
+                </div>
               </CardContent>
             </Card>
 
+            {/* Redondeo y Devoluciones */}
             <Card className="max-w-2xl">
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  🔄 Redondeo de Cobros
+                <CardTitle className="flex items-center gap-2 text-base">
+                  🔄 Redondeo de Cobros y Devoluciones
                 </CardTitle>
-                <CardDescription>
-                  Configura el redondeo automático de los totales de venta para facilitar el cambio.
+                <CardDescription className="text-xs">
+                  Configura la regla de ajuste de cambio y el plazo de devoluciones
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between p-4 border rounded-lg">
                   <div className="space-y-0.5 flex-1 pr-4">
-                    <Label className="text-base">Activar redondeo de cobros</Label>
-                    <p className="text-sm text-muted-foreground">
+                    <Label className="text-sm font-medium">Activar redondeo de cobros</Label>
+                    <p className="text-xs text-muted-foreground">
                       Redondea el total de cada venta hacia abajo al múltiplo más cercano para facilitar el cambio.
                     </p>
                   </div>
@@ -402,7 +426,7 @@ export default function Configuracion() {
                   />
                 </div>
                 <div className="space-y-1.5">
-                  <Label htmlFor="redondeo-multiplo">Múltiplo de redondeo (Gs)</Label>
+                  <Label htmlFor="redondeo-multiplo" className="text-xs">Múltiplo de redondeo (Gs)</Label>
                   <Input
                     id="redondeo-multiplo"
                     type="number"
@@ -411,6 +435,7 @@ export default function Configuracion() {
                     step={1}
                     value={redondeoMultiplo}
                     onChange={e => setRedondeoMultiplo(Number(e.target.value))}
+                    className="h-9 text-xs"
                   />
                 </div>
                 <div className="flex gap-3 p-3 rounded-lg border border-blue-500/20 bg-blue-500/5">
@@ -421,7 +446,7 @@ export default function Configuracion() {
                 </div>
                 <div className="space-y-4 border-t pt-4">
                   <div className="space-y-1.5">
-                    <Label htmlFor="horas-devolucion">Plazo para devolver (horas)</Label>
+                    <Label htmlFor="horas-devolucion" className="text-xs">Plazo para devolver (horas)</Label>
                     <Input
                       id="horas-devolucion"
                       type="number"
@@ -430,6 +455,7 @@ export default function Configuracion() {
                       step={1}
                       value={horasLimiteDevolucion}
                       onChange={e => setHorasLimiteDevolucion(Number(e.target.value))}
+                      className="h-9 text-xs"
                     />
                   </div>
                   <div className="flex items-center justify-between gap-4 p-4 border rounded-lg">

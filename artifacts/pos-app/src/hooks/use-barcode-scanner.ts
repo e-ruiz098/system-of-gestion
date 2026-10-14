@@ -28,7 +28,7 @@ export function matchProductByBarcode<T extends { codigo?: string | null }>(
 }
 
 export interface UseBarcodeScannerOptions {
-  /** Callback fired when a barcode is scanned (via Enter or newline) */
+  /** Callback fired when a barcode is scanned (via scanner auto-add or Enter) */
   onScan?: (barcode: string) => void;
   /** Callback fired when Enter is pressed (useful in forms to advance to next field) */
   onEnterNext?: () => void;
@@ -40,12 +40,15 @@ export interface UseBarcodeScannerOptions {
 
 /**
  * Reusable hook for USB barcode scanner (Keyboard Wedge) and manual barcode entry.
- * Usable both in POS sales terminal (Venta) and Product creation/edit forms (Productos).
+ * Distinguishes rapid USB scanner keystroke bursts / newline suffixes from manual typing.
  */
 export function useBarcodeScanner(options: UseBarcodeScannerOptions = {}) {
   const { onScan, onEnterNext, autoFocus = false, initialValue = '' } = options;
   const [barcode, setBarcode] = useState(initialValue);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const lastKeyTimeRef = useRef<number>(0);
+  const fastCountRef = useRef<number>(0);
 
   const focus = useCallback(() => {
     inputRef.current?.focus();
@@ -68,27 +71,43 @@ export function useBarcodeScanner(options: UseBarcodeScannerOptions = {}) {
     return () => clearTimeout(timer);
   }, [autoFocus, focus]);
 
-  // Handles input change, cleaning \r and \n from rapid USB scanner streams
+  // Handles input change, detecting rapid USB scanner keystrokes or newline suffixes
   const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value;
     const clean = raw.replace(/[\r\n]/g, '');
+    const now = performance.now();
+    const timeDelta = now - lastKeyTimeRef.current;
+    lastKeyTimeRef.current = now;
+
+    // Track fast typing (barcode scanners transmit chars within < 35ms)
+    if (timeDelta < 35 && raw.length > 1) {
+      fastCountRef.current += 1;
+    } else if (raw.length <= 1) {
+      fastCountRef.current = 0;
+    }
+
     setBarcode(clean);
 
-    // If scanner stream contained newline characters, process scan immediately
-    if (raw.endsWith('\n') || raw.endsWith('\r')) {
+    // Scanner stream ended with carriage return / newline, or multi-char burst
+    const hasTrailingNewline = raw.endsWith('\n') || raw.endsWith('\r');
+    const isRapidScannerStream = fastCountRef.current >= 2 && clean.length >= 3;
+
+    if (hasTrailingNewline || isRapidScannerStream) {
       const trimmed = clean.trim();
       if (trimmed) {
         if (onScan) {
           onScan(trimmed);
           setBarcode('');
+          fastCountRef.current = 0;
         } else if (onEnterNext) {
           onEnterNext();
+          fastCountRef.current = 0;
         }
       }
     }
   }, [onScan, onEnterNext]);
 
-  // Handles KeyDown: prevents premature form submission on Enter and invokes scan/next
+  // Handles KeyDown: prevents premature form submission on Enter and invokes scan/next for manual entry
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       e.preventDefault(); // Always prevent premature form submission or page reload
@@ -97,8 +116,10 @@ export function useBarcodeScanner(options: UseBarcodeScannerOptions = {}) {
         if (onScan) {
           onScan(trimmed);
           setBarcode('');
+          fastCountRef.current = 0;
         } else if (onEnterNext) {
           onEnterNext();
+          fastCountRef.current = 0;
         }
       } else if (onEnterNext) {
         onEnterNext();
