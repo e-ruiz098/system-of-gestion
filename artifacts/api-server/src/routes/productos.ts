@@ -320,8 +320,8 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
       res.status(400).json({ error: `La cantidad '${raw}' no es válida. Debe ser un número mayor a cero.` });
       return;
     }
-    if (num > 1_000_000) {
-      res.status(400).json({ error: `La cantidad '${raw}' supera el límite permitido.` });
+    if (num > 100_000) {
+      res.status(400).json({ error: `La cantidad '${raw}' supera el límite máximo permitido (100.000 por renglón)` });
       return;
     }
     const rounded = Math.round(num * 1000) / 1000;
@@ -354,7 +354,7 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
       const [updatedProd] = await tx.select({ stock: productosTable.stock }).from(productosTable).where(eq(productosTable.id, id));
       const stockResultante = updatedProd.stock;
 
-      await tx.insert(movimientosStockTable).values({
+      const [insertedMov] = await tx.insert(movimientosStockTable).values({
         producto_id: id,
         usuario_id: userId,
         tipo: "ingreso",
@@ -363,7 +363,7 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
         renglones: JSON.stringify(validQuantities),
         total_ingresado: totalIngresado,
         stock_resultante: stockResultante,
-      });
+      }).returning();
 
       const formattedQtyList = validQuantities.map(q => `+${q}`).join(" ");
       await tx.insert(auditoriaTable).values({
@@ -377,6 +377,7 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
 
       return {
         id,
+        movimiento_id: insertedMov.id,
         nombre: prod.nombre,
         stock_anterior: stockAnterior,
         total_ingresado: totalIngresado,
@@ -389,6 +390,195 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
     console.error("DEBUG ERROR IN STOCK INGRESO:", err);
     const status = typeof err?.status === "number" ? err.status : 500;
     res.status(status).json({ error: err?.message || "Error al registrar el ingreso de stock" });
+  }
+});
+
+// ── POST /productos/:id/stock-ingreso/:movimientoId/deshacer (Admin Only, 30s) ──
+router.post("/productos/:id/stock-ingreso/:movimientoId/deshacer", async (req, res): Promise<void> => {
+  if (!(req as any).session?.userId) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
+  if (!requireAdmin(req, res)) return;
+
+  const id = parseId(req.params.id);
+  const movimientoId = parseId(req.params.movimientoId);
+  if (id === null || movimientoId === null) {
+    res.status(400).json({ error: "IDs inválidos" }); return;
+  }
+
+  try {
+    const userId = (req as any).session.userId;
+
+    const result = await db.transaction(async (tx) => {
+      const [mov] = await tx.select().from(movimientosStockTable).where(and(eq(movimientosStockTable.id, movimientoId), eq(movimientosStockTable.producto_id, id)));
+      if (!mov) {
+        throw Object.assign(new Error("Movimiento de ingreso no encontrado"), { status: 404 });
+      }
+
+      if (mov.anulado) {
+        throw Object.assign(new Error("Este ingreso ya se encuentra deshecho o anulado"), { status: 400 });
+      }
+
+      const elapsedSeconds = (Date.now() - new Date(mov.fecha).getTime()) / 1000;
+      if (elapsedSeconds > 35) { // allow a small grace window over 30s for network delay
+        throw Object.assign(new Error("El tiempo de 30 segundos para deshacer este ingreso ha expirado"), { status: 400 });
+      }
+
+      const [prod] = await tx.select().from(productosTable).where(eq(productosTable.id, id));
+      if (!prod) {
+        throw Object.assign(new Error("Producto no encontrado"), { status: 404 });
+      }
+
+      if (prod.stock < mov.total_ingresado) {
+        throw Object.assign(new Error(`Stock insuficiente para deshacer el ingreso. Stock actual: ${prod.stock}, ingreso a deshacer: ${mov.total_ingresado}`), { status: 400 });
+      }
+
+      const stockAnterior = prod.stock;
+
+      await tx.run(sql`UPDATE productos SET stock = ROUND(stock - ${mov.total_ingresado}, 3) WHERE id = ${id}`);
+
+      const [updatedProd] = await tx.select({ stock: productosTable.stock }).from(productosTable).where(eq(productosTable.id, id));
+      const stockResultante = updatedProd.stock;
+
+      // Mark original as voided
+      await tx.update(movimientosStockTable).set({
+        anulado: true,
+        motivo_anulacion: "Deshecho en ventana de 30 segundos",
+        anulado_por_usuario: userId,
+        fecha_anulacion: new Date(),
+      }).where(eq(movimientosStockTable.id, movimientoId));
+
+      // Record counter movement
+      await tx.insert(movimientosStockTable).values({
+        producto_id: id,
+        usuario_id: userId,
+        tipo: "anulacion",
+        motivo: `Deshecho de ingreso #${movimientoId}`,
+        stock_anterior: stockAnterior,
+        renglones: JSON.stringify([-mov.total_ingresado]),
+        total_ingresado: -mov.total_ingresado,
+        stock_resultante: stockResultante,
+      });
+
+      await tx.insert(auditoriaTable).values({
+        usuario_id: userId,
+        accion: "deshacer_ingreso_stock",
+        entidad: "producto",
+        entidad_id: id,
+        detalle: `Deshecho de ingreso #${movimientoId}: stock anterior ${stockAnterior} -> deshecho -${mov.total_ingresado} -> resultante ${stockResultante}`,
+        monto: mov.total_ingresado,
+      });
+
+      return {
+        id,
+        movimiento_id: movimientoId,
+        stock_resultante: stockResultante,
+      };
+    });
+
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    const status = typeof err?.status === "number" ? err.status : 500;
+    res.status(status).json({ error: err?.message || "Error al deshacer el ingreso de stock" });
+  }
+});
+
+// ── POST /productos/:id/stock-historial/:movimientoId/anular (Admin Only) ───────
+router.post("/productos/:id/stock-historial/:movimientoId/anular", async (req, res): Promise<void> => {
+  if (!(req as any).session?.userId) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
+  if (!requireAdmin(req, res)) return;
+
+  const id = parseId(req.params.id);
+  const movimientoId = parseId(req.params.movimientoId);
+  if (id === null || movimientoId === null) {
+    res.status(400).json({ error: "IDs inválidos" }); return;
+  }
+
+  const { motivo } = req.body ?? {};
+  if (!motivo || typeof motivo !== "string" || motivo.trim().length === 0) {
+    res.status(400).json({ error: "Debe especificar un motivo obligatorio para anular el ingreso de stock" });
+    return;
+  }
+
+  try {
+    const userId = (req as any).session.userId;
+
+    const result = await db.transaction(async (tx) => {
+      const [mov] = await tx.select().from(movimientosStockTable).where(and(eq(movimientosStockTable.id, movimientoId), eq(movimientosStockTable.producto_id, id)));
+      if (!mov) {
+        throw Object.assign(new Error("Movimiento de stock no encontrado"), { status: 404 });
+      }
+
+      if (mov.anulado) {
+        throw Object.assign(new Error("Este ingreso ya se encuentra anulado"), { status: 400 });
+      }
+
+      if (mov.tipo !== "ingreso") {
+        throw Object.assign(new Error("Solo se pueden anular movimientos de tipo ingreso"), { status: 400 });
+      }
+
+      const [prod] = await tx.select().from(productosTable).where(eq(productosTable.id, id));
+      if (!prod) {
+        throw Object.assign(new Error("Producto no encontrado"), { status: 404 });
+      }
+
+      if (prod.stock < mov.total_ingresado) {
+        throw Object.assign(new Error(`Stock insuficiente para anular el ingreso. Stock actual: ${prod.stock}, ingreso a anular: ${mov.total_ingresado}`), { status: 400 });
+      }
+
+      const stockAnterior = prod.stock;
+
+      await tx.run(sql`UPDATE productos SET stock = ROUND(stock - ${mov.total_ingresado}, 3) WHERE id = ${id}`);
+
+      const [updatedProd] = await tx.select({ stock: productosTable.stock }).from(productosTable).where(eq(productosTable.id, id));
+      const stockResultante = updatedProd.stock;
+
+      const motivoText = motivo.trim();
+
+      // Mark original as voided
+      await tx.update(movimientosStockTable).set({
+        anulado: true,
+        motivo_anulacion: motivoText,
+        anulado_por_usuario: userId,
+        fecha_anulacion: new Date(),
+      }).where(eq(movimientosStockTable.id, movimientoId));
+
+      // Insert counter movement
+      await tx.insert(movimientosStockTable).values({
+        producto_id: id,
+        usuario_id: userId,
+        tipo: "anulacion",
+        motivo: `Anulación de ingreso #${movimientoId}: ${motivoText}`,
+        stock_anterior: stockAnterior,
+        renglones: JSON.stringify([-mov.total_ingresado]),
+        total_ingresado: -mov.total_ingresado,
+        stock_resultante: stockResultante,
+      });
+
+      await tx.insert(auditoriaTable).values({
+        usuario_id: userId,
+        accion: "anular_ingreso_stock",
+        entidad: "producto",
+        entidad_id: id,
+        detalle: `Anulación de ingreso #${movimientoId}: stock anterior ${stockAnterior} -> deshecho -${mov.total_ingresado} -> resultante ${stockResultante} (motivo: ${motivoText})`,
+        monto: mov.total_ingresado,
+      });
+
+      return {
+        id,
+        movimiento_id: movimientoId,
+        stock_resultante: stockResultante,
+      };
+    });
+
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    const status = typeof err?.status === "number" ? err.status : 500;
+    res.status(status).json({ error: err?.message || "Error al anular el ingreso de stock" });
   }
 });
 
@@ -416,6 +606,10 @@ router.get("/productos/:id/stock-historial", async (req, res): Promise<void> => 
       total_ingresado: movimientosStockTable.total_ingresado,
       stock_resultante: movimientosStockTable.stock_resultante,
       fecha: movimientosStockTable.fecha,
+      anulado: movimientosStockTable.anulado,
+      motivo_anulacion: movimientosStockTable.motivo_anulacion,
+      anulado_por_usuario: movimientosStockTable.anulado_por_usuario,
+      fecha_anulacion: movimientosStockTable.fecha_anulacion,
     })
     .from(movimientosStockTable)
     .leftJoin(usuariosTable, eq(movimientosStockTable.usuario_id, usuariosTable.id))
@@ -431,6 +625,7 @@ router.get("/productos/:id/stock-historial", async (req, res): Promise<void> => 
     return {
       ...r,
       fecha: r.fecha.toISOString(),
+      fecha_anulacion: r.fecha_anulacion ? r.fecha_anulacion.toISOString() : null,
       renglones_parsed: parsedRenglones,
     };
   }));

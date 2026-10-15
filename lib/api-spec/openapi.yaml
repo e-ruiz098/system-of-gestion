@@ -431,6 +431,8 @@ paths:
                     type: boolean
                   id:
                     type: integer
+                  movimiento_id:
+                    type: integer
                   nombre:
                     type: string
                   stock_anterior:
@@ -439,6 +441,56 @@ paths:
                     type: number
                   stock_resultante:
                     type: number
+
+  /productos/{id}/stock-ingreso/{movimientoId}/deshacer:
+    post:
+      operationId: deshacerStockIngreso
+      tags: [productos]
+      summary: Undo a stock entry within 30 seconds (admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: movimientoId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Stock entry undone
+
+  /productos/{id}/stock-historial/{movimientoId}/anular:
+    post:
+      operationId: anularStockIngreso
+      tags: [productos]
+      summary: Void a stock entry from movement history with mandatory motivo (admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: movimientoId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [motivo]
+              properties:
+                motivo:
+                  type: string
+      responses:
+        "200":
+          description: Stock entry voided
 
   /productos/{id}/stock-historial:
     get:
@@ -1112,7 +1164,7 @@ components:
 
     MovimientoStock:
       type: object
-      required: [id, producto_id, tipo, stock_anterior, renglones, total_ingresado, stock_resultante, fecha]
+      required: [id, producto_id, tipo, stock_anterior, renglones, total_ingresado, stock_resultante, fecha, anulado]
       properties:
         id:
           type: integer
@@ -1124,7 +1176,7 @@ components:
           type: ["string", "null"]
         tipo:
           type: string
-          enum: [ingreso, ajuste]
+          enum: [ingreso, ajuste, anulacion]
         motivo:
           type: ["string", "null"]
         stock_anterior:
@@ -1141,6 +1193,14 @@ components:
           type: number
         fecha:
           type: string
+        anulado:
+          type: boolean
+        motivo_anulacion:
+          type: ["string", "null"]
+        anulado_por_usuario:
+          type: ["integer", "null"]
+        fecha_anulacion:
+          type: ["string", "null"]
 
     DeleteProductoResult:
       type: object

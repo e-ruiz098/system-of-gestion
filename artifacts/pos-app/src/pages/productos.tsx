@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import {
   Search, Plus, Edit, Trash2, Loader2, History, Package,
   ChevronDown, ChevronRight, Download, Image as ImageIcon, Upload, X, Tag, Barcode,
-  PlusCircle, AlertTriangle, ArrowRight,
+  PlusCircle, AlertTriangle, ArrowRight, Undo2, Ban, CheckCircle2,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Label } from '@/components/ui/label';
@@ -45,9 +45,19 @@ function AgregarStockModal({
   open: boolean;
   onClose: () => void;
 }) {
+  const { user } = useAuth();
+  const isAdmin = user?.rol === 'admin';
   const [rows, setRows] = useState<string[]>(['']);
   const [showConfirmClose, setShowConfirmClose] = useState(false);
+  const [showConfirmSave, setShowConfirmSave] = useState(false);
+  const [undoInfo, setUndoInfo] = useState<{ movimientoId: number; total: number; timer: number } | null>(null);
+
+  // Anular history state
+  const [anularMov, setAnularMov] = useState<any | null>(null);
+  const [motivoAnulacion, setMotivoAnulacion] = useState('');
+
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const undoIntervalRef = useRef<any>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -65,16 +75,32 @@ function AgregarStockModal({
     enabled: !!product?.id && open,
   });
 
-  // Reset rows when opening
+  // Handle undo timer countdown
+  useEffect(() => {
+    if (undoInfo && undoInfo.timer > 0) {
+      undoIntervalRef.current = setInterval(() => {
+        setUndoInfo(prev => prev && prev.timer > 1 ? { ...prev, timer: prev.timer - 1 } : null);
+      }, 1000);
+    } else {
+      setUndoInfo(null);
+    }
+    return () => {
+      if (undoIntervalRef.current) clearInterval(undoIntervalRef.current);
+    };
+  }, [undoInfo?.movimientoId, undoInfo?.timer === 30]);
+
+  // Reset state when opening
   useEffect(() => {
     if (open) {
       setRows(['']);
       setShowConfirmClose(false);
+      setShowConfirmSave(false);
+      setAnularMov(null);
+      setMotivoAnulacion('');
       setTimeout(() => inputRefs.current[0]?.focus(), 100);
     }
   }, [open, product?.id]);
 
-  // Check if user has entered non-empty values
   const hasFilledRows = useMemo(() => {
     return rows.some(r => r.trim().length > 0);
   }, [rows]);
@@ -118,6 +144,9 @@ function AgregarStockModal({
       if (!Number.isFinite(val) || val <= 0) {
         return { empty: false, valid: false, error: 'Debe ser un número mayor a 0', value: 0 };
       }
+      if (val > 100000) {
+        return { empty: false, valid: false, error: 'Supera el máximo de 100.000 por renglón', value: 0 };
+      }
       return { empty: false, valid: true, error: null, value: Math.round(val * 1000) / 1000 };
     });
   }, [rows]);
@@ -137,6 +166,14 @@ function AgregarStockModal({
 
   const currentStock = product?.stock ?? 0;
   const nuevoStock = Math.round((currentStock + totalIngresado) * 1000) / 1000;
+
+  // High quantity warning requirement
+  const isHighQuantityWarning = useMemo(() => {
+    if (currentStock === 0) {
+      return totalIngresado > 1000;
+    }
+    return totalIngresado > currentStock * 10;
+  }, [currentStock, totalIngresado]);
 
   // Mutation to submit stock
   const stockIngresoMutation = useMutation({
@@ -158,7 +195,18 @@ function AgregarStockModal({
         description: `Se agregaron +${data.total_ingresado}. Nuevo stock: ${data.stock_resultante}`,
       });
       queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
-      onClose();
+
+      // Start 30 second undo timer
+      if (data.movimiento_id) {
+        setUndoInfo({
+          movimientoId: data.movimiento_id,
+          total: data.total_ingresado,
+          timer: 30,
+        });
+      }
+
+      setShowConfirmSave(false);
+      setRows(['']);
     },
     onError: (err: any) => {
       toast({
@@ -169,7 +217,69 @@ function AgregarStockModal({
     },
   });
 
-  const handleSave = () => {
+  // Undo mutation (within 30 seconds)
+  const undoMutation = useMutation({
+    mutationFn: async (movimientoId: number) => {
+      const res = await fetch(`/api/productos/${product.id}/stock-ingreso/${movimientoId}/deshacer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Error al deshacer el ingreso');
+      }
+      return data;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: 'Ingreso deshecho correctamente',
+        description: `Stock resultante: ${data.stock_resultante}`,
+      });
+      setUndoInfo(null);
+      queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'No se pudo deshacer',
+        description: err?.message || 'Ocurrió un error al intentar deshacer.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  // Anular mutation (from history with motivo)
+  const anularMutation = useMutation({
+    mutationFn: async ({ movimientoId, motivo }: { movimientoId: number; motivo: string }) => {
+      const res = await fetch(`/api/productos/${product.id}/stock-historial/${movimientoId}/anular`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ motivo }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Error al anular el ingreso');
+      }
+      return data;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: 'Ingreso anulado con éxito',
+        description: `Nuevo stock del producto: ${data.stock_resultante}`,
+      });
+      setAnularMov(null);
+      setMotivoAnulacion('');
+      queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'No se pudo anular el ingreso',
+        description: err?.message || 'Verifique el stock actual y el motivo ingresado.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const handleOpenConfirmModal = () => {
     if (hasErrors) {
       toast({
         title: 'Errores en los valores',
@@ -186,6 +296,10 @@ function AgregarStockModal({
       });
       return;
     }
+    setShowConfirmSave(true);
+  };
+
+  const handleConfirmSubmit = () => {
     stockIngresoMutation.mutate(parsedQuantities);
   };
 
@@ -216,6 +330,30 @@ function AgregarStockModal({
           {/* Body */}
           <div className="flex-1 overflow-y-auto p-6 space-y-4">
 
+            {/* 30-second Undo Banner if active */}
+            {undoInfo && (
+              <div className="p-3.5 rounded-lg bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-xs">
+                <div>
+                  <p className="font-bold text-amber-600 dark:text-amber-400">
+                    Último ingreso de +{undoInfo.total} registrado
+                  </p>
+                  <p className="text-muted-foreground">
+                    Podés deshacerlo durante los próximos <span className="font-mono font-bold text-foreground">{undoInfo.timer}s</span>.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => undoMutation.mutate(undoInfo.movimientoId)}
+                  disabled={undoMutation.isPending}
+                  className="gap-1.5 border-amber-500 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 shrink-0 font-bold"
+                >
+                  {undoMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Undo2 className="w-3.5 h-3.5" />}
+                  Deshacer
+                </Button>
+              </div>
+            )}
+
             {/* Lista de renglones */}
             <div className="space-y-2">
               <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
@@ -237,6 +375,7 @@ function AgregarStockModal({
                             value={rowVal}
                             onChange={e => handleRowChange(idx, e.target.value)}
                             onKeyDown={e => {
+                              // CRITICAL USER REQ: Enter ONLY moves to next row or creates new row; NEVER submits/saves!
                               if (e.key === 'Enter') {
                                 e.preventDefault();
                                 if (idx === rows.length - 1) {
@@ -305,21 +444,40 @@ function AgregarStockModal({
               ) : !historial || historial.length === 0 ? (
                 <p className="text-xs text-muted-foreground italic py-2">Sin ingresos acumulativos registrados aún.</p>
               ) : (
-                <div className="space-y-1.5 max-h-36 overflow-y-auto text-xs font-mono pr-1">
+                <div className="space-y-1.5 max-h-40 overflow-y-auto text-xs font-mono pr-1">
                   {historial.map((h: any) => {
                     const fechaStr = new Date(h.fecha).toLocaleString('es-AR', {
                       day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
                     });
-                    const formattedRenglones = h.renglones_parsed?.map((q: number) => `+${q}`).join(' ') || '';
+                    const formattedRenglones = h.renglones_parsed?.map((q: number) => `${q >= 0 ? '+' : ''}${q}`).join(' ') || '';
 
                     return (
-                      <div key={h.id} className="p-2 rounded bg-muted/40 border border-border/50 space-y-0.5">
+                      <div key={h.id} className={`p-2 rounded border space-y-0.5 ${h.anulado ? 'bg-destructive/5 border-destructive/20 opacity-70' : 'bg-muted/40 border-border/50'}`}>
                         <div className="flex justify-between text-[11px] text-muted-foreground">
                           <span>{fechaStr}</span>
-                          <span className="font-bold text-foreground">{h.usuario_nombre || 'Usuario'}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-foreground">{h.usuario_nombre || 'Usuario'}</span>
+                            {h.anulado && <Badge variant="outline" className="text-[9px] px-1 py-0 text-destructive border-destructive/30">Anulado</Badge>}
+                          </div>
                         </div>
-                        <div className="text-foreground leading-snug">
-                          anterior {h.stock_anterior} — <span className="text-primary font-bold">{formattedRenglones}</span> — total <strong className="text-primary">+{h.total_ingresado}</strong> — resultante <strong>{h.stock_resultante}</strong>
+                        <div className="text-foreground leading-snug flex justify-between items-center">
+                          <div>
+                            anterior {h.stock_anterior} — <span className="text-primary font-bold">{formattedRenglones}</span> — total <strong className="text-primary">+{h.total_ingresado}</strong> — resultante <strong>{h.stock_resultante}</strong>
+                            {h.anulado && h.motivo_anulacion && (
+                              <p className="text-[10px] text-destructive italic mt-0.5">Motivo anulación: {h.motivo_anulacion}</p>
+                            )}
+                          </div>
+                          {!h.anulado && h.tipo === 'ingreso' && isAdmin && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setAnularMov(h)}
+                              className="h-6 px-2 text-[10px] text-destructive hover:bg-destructive/10 shrink-0 gap-1 font-bold"
+                            >
+                              <Ban className="w-3 h-3" />
+                              Anular
+                            </Button>
+                          )}
                         </div>
                       </div>
                     );
@@ -335,14 +493,127 @@ function AgregarStockModal({
               Cancelar
             </Button>
             <Button
-              onClick={handleSave}
+              onClick={handleOpenConfirmModal}
               disabled={stockIngresoMutation.isPending || parsedQuantities.length === 0 || hasErrors}
               className="gap-2 px-6"
             >
-              {stockIngresoMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
               Listo
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Confirm Save Dialog with Summary & Yellow Alert Warning ─────────────────── */}
+      <Dialog open={showConfirmSave} onOpenChange={setShowConfirmSave}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-primary" /> Confirmar ingreso de stock
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Verifique los números antes de confirmar la actualización de inventario.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-2">
+            {/* Product summary card */}
+            <div className="p-3.5 rounded-lg bg-muted/40 border border-border space-y-2 text-sm">
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground text-xs">Producto:</span>
+                <span className="font-bold text-foreground">{product.nombre}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground text-xs">Stock actual:</span>
+                <span className="font-mono font-bold text-foreground">{currentStock}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-muted-foreground text-xs">Cantidad a sumar:</span>
+                <span className="font-mono font-bold text-primary">+{totalIngresado}</span>
+              </div>
+              <div className="flex justify-between items-center border-t border-border pt-2 font-bold text-base">
+                <span>Stock resultante:</span>
+                <span className="font-mono text-primary">{nuevoStock}</span>
+              </div>
+            </div>
+
+            {/* High quantity warning box in yellow */}
+            {isHighQuantityWarning && (
+              <div className="p-3 rounded-lg bg-amber-500/15 border border-amber-500/40 text-amber-700 dark:text-amber-400 space-y-1">
+                <p className="font-bold text-xs flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500" />
+                  ¡ADVERTENCIA DE CANTIDAD ELEVADA!
+                </p>
+                <p className="text-[11px] leading-relaxed">
+                  La cantidad a sumar (<strong>+{totalIngresado}</strong>) supera más de 10 veces el stock actual (<strong>{currentStock}</strong>). Asegúrese de que no sea un error tipográfico.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="ghost" onClick={() => setShowConfirmSave(false)} disabled={stockIngresoMutation.isPending}>
+              Volver a revisar
+            </Button>
+            <Button
+              onClick={handleConfirmSubmit}
+              disabled={stockIngresoMutation.isPending}
+              className="gap-2 px-6 bg-primary text-primary-foreground font-bold"
+            >
+              {stockIngresoMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+              Confirmar e Ingresar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Dialog Anular Ingreso con Motivo Obligatorio ───────────────────── */}
+      <Dialog open={!!anularMov} onOpenChange={o => { if (!o) setAnularMov(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold flex items-center gap-2 text-destructive">
+              <Ban className="w-5 h-5" /> Anular ingreso de stock #{anularMov?.id}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Esta acción restará <strong>-{anularMov?.total_ingresado}</strong> del stock actual del producto.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 py-1">
+            <div className="p-3 rounded bg-destructive/10 border border-destructive/20 text-xs space-y-1">
+              <p><strong>Stock actual del producto:</strong> {currentStock}</p>
+              <p><strong>Total a restar por anulación:</strong> -{anularMov?.total_ingresado}</p>
+              <p><strong>Stock después de anular:</strong> {currentStock - (anularMov?.total_ingresado ?? 0)}</p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Motivo de la anulación *</Label>
+              <Input
+                value={motivoAnulacion}
+                onChange={e => setMotivoAnulacion(e.target.value)}
+                placeholder="Ej. Carga duplicada por error"
+                autoFocus
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setAnularMov(null)} disabled={anularMutation.isPending}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={anularMutation.isPending || !motivoAnulacion.trim()}
+              onClick={() => {
+                if (anularMov) {
+                  anularMutation.mutate({ movimientoId: anularMov.id, motivo: motivoAnulacion.trim() });
+                }
+              }}
+              className="gap-2 font-bold"
+            >
+              {anularMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+              Confirmar Anulación
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

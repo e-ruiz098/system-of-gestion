@@ -60,11 +60,19 @@ client.execute(`
     renglones TEXT NOT NULL,
     total_ingresado REAL NOT NULL,
     stock_resultante REAL NOT NULL,
-    fecha INTEGER NOT NULL DEFAULT (unixepoch())
+    fecha INTEGER NOT NULL DEFAULT (unixepoch()),
+    anulado INTEGER NOT NULL DEFAULT 0,
+    motivo_anulacion TEXT,
+    anulado_por_usuario INTEGER REFERENCES usuarios(id),
+    fecha_anulacion INTEGER
   );
 `).then(() => {
   client.execute(`ALTER TABLE movimientos_stock ADD COLUMN tipo TEXT NOT NULL DEFAULT 'ingreso';`).catch(() => {});
   client.execute(`ALTER TABLE movimientos_stock ADD COLUMN motivo TEXT;`).catch(() => {});
+  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN anulado INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
+  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN motivo_anulacion TEXT;`).catch(() => {});
+  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN anulado_por_usuario INTEGER REFERENCES usuarios(id);`).catch(() => {});
+  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN fecha_anulacion INTEGER;`).catch(() => {});
 }).catch(() => {});
 
 export const db = drizzle(client, { schema });
