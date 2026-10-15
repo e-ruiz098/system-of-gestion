@@ -8,7 +8,7 @@ const router: IRouter = Router();
 const subcategoriasTable = alias(categoriasTable, "subcategorias");
 
 function requireAdmin(req: any, res: any): boolean {
-  if (req.session?.rol !== "admin") {
+  if ((req as any).session?.rol !== "admin") {
     res.status(403).json({ error: "Admin only" });
     return false;
   }
@@ -16,7 +16,7 @@ function requireAdmin(req: any, res: any): boolean {
 }
 
 function requireAuth(req: any, res: any): boolean {
-  if (!req.session?.userId) {
+  if (!(req as any).session?.userId) {
     res.status(401).json({ error: "Not authenticated" });
     return false;
   }
@@ -281,7 +281,12 @@ router.get("/productos/:id", async (req, res): Promise<void> => {
 
 // ── POST /productos/:id/stock-ingreso ──────────────────────────────────────────
 router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
+  if (!(req as any).session?.userId) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
   if (!requireAdmin(req, res)) return;
+
   const id = parseId(req.params.id);
   if (id === null) { res.status(400).json({ error: "ID de producto inválido" }); return; }
 
@@ -300,9 +305,15 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
 
   const validQuantities: number[] = [];
   for (const raw of rawList) {
-    if (raw === null || raw === undefined) continue;
+    if (raw === null || raw === undefined) {
+      res.status(400).json({ error: "La cantidad no puede estar vacía." });
+      return;
+    }
     const str = String(raw).trim().replace(",", ".");
-    if (str === "") continue;
+    if (str === "") {
+      res.status(400).json({ error: "La cantidad no puede estar vacía." });
+      return;
+    }
 
     const num = parseFloat(str);
     if (!Number.isFinite(num) || num <= 0) {
@@ -324,42 +335,30 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
 
   const totalIngresado = Math.round(validQuantities.reduce((sum, q) => sum + q, 0) * 1000) / 1000;
 
-  await db.run(sql`
-    CREATE TABLE IF NOT EXISTS movimientos_stock (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      producto_id INTEGER NOT NULL REFERENCES productos(id),
-      usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
-      stock_anterior REAL NOT NULL,
-      renglones TEXT NOT NULL,
-      total_ingresado REAL NOT NULL,
-      stock_resultante REAL NOT NULL,
-      fecha INTEGER NOT NULL DEFAULT (unixepoch())
-    );
-  `);
-
   try {
-    const userId = (req as any).session?.userId ?? 1;
+    const userId = (req as any).session.userId;
 
     const result = await db.transaction(async (tx) => {
       const [prod] = await tx.select().from(productosTable).where(eq(productosTable.id, id));
       if (!prod) {
-        throw new Error("Producto no encontrado");
+        throw Object.assign(new Error("Producto no encontrado"), { status: 404 });
       }
       if (!prod.activo) {
-        throw new Error("El producto está inactivo");
+        throw Object.assign(new Error("El producto está inactivo"), { status: 400 });
       }
 
       const stockAnterior = prod.stock;
-      const stockResultante = Math.round((stockAnterior + totalIngresado) * 1000) / 1000;
 
-      await tx
-        .update(productosTable)
-        .set({ stock: stockResultante })
-        .where(eq(productosTable.id, id));
+      await tx.run(sql`UPDATE productos SET stock = ROUND(stock + ${totalIngresado}, 3) WHERE id = ${id}`);
+
+      const [updatedProd] = await tx.select({ stock: productosTable.stock }).from(productosTable).where(eq(productosTable.id, id));
+      const stockResultante = updatedProd.stock;
 
       await tx.insert(movimientosStockTable).values({
         producto_id: id,
         usuario_id: userId,
+        tipo: "ingreso",
+        motivo: null,
         stock_anterior: stockAnterior,
         renglones: JSON.stringify(validQuantities),
         total_ingresado: totalIngresado,
@@ -387,36 +386,22 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
 
     res.json({ ok: true, ...result });
   } catch (err: any) {
-    if (err.message === "Producto no encontrado") {
-      res.status(404).json({ error: "Producto no encontrado" });
-      return;
-    }
-    if (err.message === "El producto está inactivo") {
-      res.status(400).json({ error: "El producto está inactivo" });
-      return;
-    }
-    res.status(500).json({ error: err?.message || "Error al registrar el ingreso de stock" });
+    console.error("DEBUG ERROR IN STOCK INGRESO:", err);
+    const status = typeof err?.status === "number" ? err.status : 500;
+    res.status(status).json({ error: err?.message || "Error al registrar el ingreso de stock" });
   }
 });
 
-// ── GET /productos/:id/stock-historial ────────────────────────────────────────
+// ── GET /productos/:id/stock-historial (Admin Only) ───────────────────────────
 router.get("/productos/:id/stock-historial", async (req, res): Promise<void> => {
-  if (!requireAuth(req, res)) return;
+  if (!(req as any).session?.userId) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
+  if (!requireAdmin(req, res)) return;
+
   const id = parseId(req.params.id);
   if (id === null) { res.status(400).json({ error: "ID de producto inválido" }); return; }
-
-  await db.run(sql`
-    CREATE TABLE IF NOT EXISTS movimientos_stock (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      producto_id INTEGER NOT NULL REFERENCES productos(id),
-      usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
-      stock_anterior REAL NOT NULL,
-      renglones TEXT NOT NULL,
-      total_ingresado REAL NOT NULL,
-      stock_resultante REAL NOT NULL,
-      fecha INTEGER NOT NULL DEFAULT (unixepoch())
-    );
-  `);
 
   const rows = await db
     .select({
@@ -424,6 +409,8 @@ router.get("/productos/:id/stock-historial", async (req, res): Promise<void> => 
       producto_id: movimientosStockTable.producto_id,
       usuario_id: movimientosStockTable.usuario_id,
       usuario_nombre: usuariosTable.nombre,
+      tipo: movimientosStockTable.tipo,
+      motivo: movimientosStockTable.motivo,
       stock_anterior: movimientosStockTable.stock_anterior,
       renglones: movimientosStockTable.renglones,
       total_ingresado: movimientosStockTable.total_ingresado,
@@ -431,7 +418,7 @@ router.get("/productos/:id/stock-historial", async (req, res): Promise<void> => 
       fecha: movimientosStockTable.fecha,
     })
     .from(movimientosStockTable)
-    .leftJoin(usuariosTable, eq(movimientosStockStockTableUsuarioId(movimientosStockTable), usuariosTable.id))
+    .leftJoin(usuariosTable, eq(movimientosStockTable.usuario_id, usuariosTable.id))
     .where(eq(movimientosStockTable.producto_id, id))
     .orderBy(sql`${movimientosStockTable.fecha} DESC`)
     .limit(100);
@@ -449,17 +436,22 @@ router.get("/productos/:id/stock-historial", async (req, res): Promise<void> => 
   }));
 });
 
-function movimientosStockStockTableUsuarioId(table: typeof movimientosStockTable) {
-  return table.usuario_id;
-}
-
 // ── PUT /productos/:id ─────────────────────────────────────────────────────────
 router.put("/productos/:id", async (req, res): Promise<void> => {
+  if (!(req as any).session?.userId) {
+    res.status(401).json({ error: "Not authenticated" });
+    return;
+  }
   if (!requireAdmin(req, res)) return;
+
   const id = parseId(req.params.id);
   if (id === null) { res.status(400).json({ error: "ID inválido" }); return; }
 
-  const { codigo, nombre, precio, costo, stock, stock_minimo, categoria_id, subcategoria_id, activo, imagen } = req.body ?? {};
+  const { codigo, nombre, precio, costo, stock, stock_minimo, categoria_id, subcategoria_id, activo, imagen, motivo } = req.body ?? {};
+
+  const [currentProd] = await db.select().from(productosTable).where(eq(productosTable.id, id));
+  if (!currentProd) { res.status(404).json({ error: "Product not found" }); return; }
+
   const updates: Record<string, unknown> = {};
 
   if (codigo !== undefined) {
@@ -499,11 +491,29 @@ router.put("/productos/:id", async (req, res): Promise<void> => {
     updates.precio = v;
   }
   if (costo !== undefined)         updates.costo          = costo != null ? Number(costo) : null;
+
+  let stockChanged = false;
+  let stockDifference = 0;
+  let newStockVal = currentProd.stock;
+
   if (stock != null) {
     const v = Number(stock);
     if (!Number.isFinite(v) || v < 0) { res.status(400).json({ error: "stock inválido" }); return; }
-    updates.stock = v;
+    newStockVal = Math.round(v * 1000) / 1000;
+    stockDifference = Math.round((newStockVal - currentProd.stock) * 1000) / 1000;
+
+    if (Math.abs(stockDifference) > 0.0001) {
+      stockChanged = true;
+      if (stockDifference < 0) {
+        if (!motivo || typeof motivo !== "string" || motivo.trim().length === 0) {
+          res.status(400).json({ error: "Debe especificar un motivo para disminuir el stock" });
+          return;
+        }
+      }
+    }
+    updates.stock = newStockVal;
   }
+
   if (stock_minimo   !== undefined) updates.stock_minimo   = stock_minimo != null ? Number(stock_minimo) : null;
   if (categoria_id   !== undefined) updates.categoria_id   = categoria_id   != null ? parseInt(categoria_id,   10) : null;
   if (subcategoria_id !== undefined) updates.subcategoria_id = subcategoria_id != null ? parseInt(subcategoria_id, 10) : null;
@@ -511,8 +521,37 @@ router.put("/productos/:id", async (req, res): Promise<void> => {
   if (imagen  !== undefined)        updates.imagen         = imagen;
 
   try {
-    const [p] = await db.update(productosTable).set(updates).where(eq(productosTable.id, id)).returning();
-    if (!p) { res.status(404).json({ error: "Product not found" }); return; }
+    const userId = (req as any).session.userId;
+
+    const p = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(productosTable).set(updates).where(eq(productosTable.id, id)).returning();
+
+      if (stockChanged) {
+        const motivoText = motivo && typeof motivo === "string" ? motivo.trim() : "Ajuste manual de stock";
+
+        await tx.insert(movimientosStockTable).values({
+          producto_id: id,
+          usuario_id: userId,
+          tipo: "ajuste",
+          motivo: motivoText,
+          stock_anterior: currentProd.stock,
+          renglones: JSON.stringify([stockDifference]),
+          total_ingresado: stockDifference,
+          stock_resultante: newStockVal,
+        });
+
+        await tx.insert(auditoriaTable).values({
+          usuario_id: userId,
+          accion: "ajuste_stock",
+          entidad: "producto",
+          entidad_id: id,
+          detalle: `Ajuste manual de stock: anterior ${currentProd.stock} -> resultante ${newStockVal} (motivo: ${motivoText})`,
+          monto: Math.abs(stockDifference),
+        });
+      }
+
+      return updated;
+    });
 
     const umbral = await getStockUmbral();
     const [cat]    = p.categoria_id    ? await db.select({ nombre: categoriasTable.nombre }).from(categoriasTable).where(eq(categoriasTable.id, p.categoria_id))    : [{ nombre: null }];
@@ -526,6 +565,7 @@ router.put("/productos/:id", async (req, res): Promise<void> => {
       stock_estado:        stockEstado(p.stock, p.stock_minimo, umbral),
     });
   } catch (err: any) {
+    console.error("DEBUG ERROR IN PRODUCT UPDATE:", err);
     if (
       err?.message?.includes("UNIQUE constraint failed") ||
       err?.code === "SQLITE_CONSTRAINT_UNIQUE" ||

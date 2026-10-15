@@ -396,6 +396,71 @@ paths:
               schema:
                 $ref: "#/components/schemas/DeleteProductoResult"
 
+  /productos/{id}/stock-ingreso:
+    post:
+      operationId: stockIngresoProducto
+      tags: [productos]
+      summary: Add stock cumulatively (admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [renglones]
+              properties:
+                renglones:
+                  type: array
+                  items:
+                    type: number
+      responses:
+        "200":
+          description: Stock added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  id:
+                    type: integer
+                  nombre:
+                    type: string
+                  stock_anterior:
+                    type: number
+                  total_ingresado:
+                    type: number
+                  stock_resultante:
+                    type: number
+
+  /productos/{id}/stock-historial:
+    get:
+      operationId: getStockHistorialProducto
+      tags: [productos]
+      summary: Get stock movement history for a product (admin only)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Stock history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MovimientoStock"
+
   /productos/{id}/toggle-activo:
     patch:
       operationId: toggleProductoActivo
@@ -1042,6 +1107,40 @@ components:
           type: boolean
         imagen:
           type: ["string", "null"]
+        motivo:
+          type: string
+
+    MovimientoStock:
+      type: object
+      required: [id, producto_id, tipo, stock_anterior, renglones, total_ingresado, stock_resultante, fecha]
+      properties:
+        id:
+          type: integer
+        producto_id:
+          type: integer
+        usuario_id:
+          type: ["integer", "null"]
+        usuario_nombre:
+          type: ["string", "null"]
+        tipo:
+          type: string
+          enum: [ingreso, ajuste]
+        motivo:
+          type: ["string", "null"]
+        stock_anterior:
+          type: number
+        renglones:
+          type: string
+        renglones_parsed:
+          type: array
+          items:
+            type: number
+        total_ingresado:
+          type: number
+        stock_resultante:
+          type: number
+        fecha:
+          type: string
 
     DeleteProductoResult:
       type: object

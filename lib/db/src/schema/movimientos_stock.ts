@@ -7,6 +7,8 @@ export const movimientosStockTable = sqliteTable("movimientos_stock", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   producto_id: integer("producto_id").notNull().references(() => productosTable.id),
   usuario_id: integer("usuario_id").notNull().references(() => usuariosTable.id),
+  tipo: text("tipo").notNull().default("ingreso"), // "ingreso" | "ajuste"
+  motivo: text("motivo"), // Motivo si disminuye stock o ajuste manual
   stock_anterior: real("stock_anterior").notNull(),
   renglones: text("renglones").notNull(), // JSON string e.g. "[12.4, 11.8, 13.1, 10.7]"
   total_ingresado: real("total_ingresado").notNull(),

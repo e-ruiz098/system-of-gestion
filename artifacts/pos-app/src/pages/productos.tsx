@@ -88,7 +88,6 @@ function AgregarStockModal({
   };
 
   const handleRowChange = (index: number, val: string) => {
-    // Replace comma with dot for validation display
     const next = [...rows];
     next[index] = val;
     setRows(next);
@@ -110,19 +109,26 @@ function AgregarStockModal({
     }
   };
 
-  // Live calculations
-  const parsedQuantities = useMemo(() => {
-    const list: number[] = [];
-    for (const r of rows) {
-      if (!r || r.trim() === '') continue;
+  // Row validation & live calculations
+  const rowStatuses = useMemo(() => {
+    return rows.map(r => {
+      if (!r || r.trim() === '') return { empty: true, valid: false, error: null, value: 0 };
       const normalized = r.trim().replace(',', '.');
       const val = parseFloat(normalized);
-      if (Number.isFinite(val) && val > 0) {
-        list.push(Math.round(val * 1000) / 1000);
+      if (!Number.isFinite(val) || val <= 0) {
+        return { empty: false, valid: false, error: 'Debe ser un número mayor a 0', value: 0 };
       }
-    }
-    return list;
+      return { empty: false, valid: true, error: null, value: Math.round(val * 1000) / 1000 };
+    });
   }, [rows]);
+
+  const hasErrors = useMemo(() => {
+    return rowStatuses.some(s => !s.empty && !s.valid);
+  }, [rowStatuses]);
+
+  const parsedQuantities = useMemo(() => {
+    return rowStatuses.filter(s => s.valid).map(s => s.value);
+  }, [rowStatuses]);
 
   const totalIngresado = useMemo(() => {
     const sum = parsedQuantities.reduce((acc, q) => acc + q, 0);
@@ -164,6 +170,14 @@ function AgregarStockModal({
   });
 
   const handleSave = () => {
+    if (hasErrors) {
+      toast({
+        title: 'Errores en los valores',
+        description: 'Corrija las cantidades marcadas en rojo antes de guardar.',
+        variant: 'destructive',
+      });
+      return;
+    }
     if (parsedQuantities.length === 0) {
       toast({
         title: 'Ingreso vacío',
@@ -208,43 +222,53 @@ function AgregarStockModal({
                 Renglones de ingreso (cada valor suma al stock)
               </Label>
 
-              <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
-                {rows.map((rowVal, idx) => (
-                  <div key={idx} className="flex items-center gap-2">
-                    <div className="relative flex-1">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold font-mono text-muted-foreground text-sm">
-                        +
-                      </span>
-                      <Input
-                        ref={el => { inputRefs.current[idx] = el; }}
-                        value={rowVal}
-                        onChange={e => handleRowChange(idx, e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            if (idx === rows.length - 1) {
-                              addRow();
-                            } else {
-                              inputRefs.current[idx + 1]?.focus();
-                            }
-                          }
-                        }}
-                        placeholder="Ej. 12,4"
-                        className="pl-7 font-mono font-bold text-sm h-10 bg-background"
-                        autoComplete="off"
-                      />
+              <div className="space-y-2.5 max-h-52 overflow-y-auto pr-1">
+                {rows.map((rowVal, idx) => {
+                  const status = rowStatuses[idx];
+                  return (
+                    <div key={idx} className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold font-mono text-muted-foreground text-sm">
+                            +
+                          </span>
+                          <Input
+                            ref={el => { inputRefs.current[idx] = el; }}
+                            value={rowVal}
+                            onChange={e => handleRowChange(idx, e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (idx === rows.length - 1) {
+                                  addRow();
+                                } else {
+                                  inputRefs.current[idx + 1]?.focus();
+                                }
+                              }
+                            }}
+                            placeholder="Ej. 12,4"
+                            className={`pl-7 font-mono font-bold text-sm h-10 bg-background ${
+                              status.error ? 'border-destructive focus-visible:ring-destructive' : ''
+                            }`}
+                            autoComplete="off"
+                          />
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => deleteRow(idx)}
+                          className="h-10 w-10 text-muted-foreground hover:text-destructive hover:bg-destructive/10 shrink-0"
+                          title="Borrar renglón"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                      {status.error && (
+                        <p className="text-[11px] text-destructive font-medium pl-2">{status.error}</p>
+                      )}
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => deleteRow(idx)}
-                      className="h-10 w-10 text-muted-foreground hover:text-destructive hover:bg-destructive/10 shrink-0"
-                      title="Borrar renglón"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <Button
@@ -312,7 +336,7 @@ function AgregarStockModal({
             </Button>
             <Button
               onClick={handleSave}
-              disabled={stockIngresoMutation.isPending || parsedQuantities.length === 0}
+              disabled={stockIngresoMutation.isPending || parsedQuantities.length === 0 || hasErrors}
               className="gap-2 px-6"
             >
               {stockIngresoMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}

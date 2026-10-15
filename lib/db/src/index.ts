@@ -48,6 +48,25 @@ const client = createClient({
   url: fileUrl,
 });
 
+// Run schema migration checks safely
+client.execute(`
+  CREATE TABLE IF NOT EXISTS movimientos_stock (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    producto_id INTEGER NOT NULL REFERENCES productos(id),
+    usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+    tipo TEXT NOT NULL DEFAULT 'ingreso',
+    motivo TEXT,
+    stock_anterior REAL NOT NULL,
+    renglones TEXT NOT NULL,
+    total_ingresado REAL NOT NULL,
+    stock_resultante REAL NOT NULL,
+    fecha INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+`).then(() => {
+  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN tipo TEXT NOT NULL DEFAULT 'ingreso';`).catch(() => {});
+  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN motivo TEXT;`).catch(() => {});
+}).catch(() => {});
+
 export const db = drizzle(client, { schema });
 
 export * from "./schema";
