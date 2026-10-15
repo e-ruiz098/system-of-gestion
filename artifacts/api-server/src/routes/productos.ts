@@ -9,7 +9,7 @@ const subcategoriasTable = alias(categoriasTable, "subcategorias");
 
 function requireAdmin(req: any, res: any): boolean {
   if ((req as any).session?.rol !== "admin") {
-    res.status(403).json({ error: "Admin only" });
+    res.status(403).json({ error: "Admin solo para esta operación" });
     return false;
   }
   return true;
@@ -17,7 +17,7 @@ function requireAdmin(req: any, res: any): boolean {
 
 function requireAuth(req: any, res: any): boolean {
   if (!(req as any).session?.userId) {
-    res.status(401).json({ error: "Not authenticated" });
+    res.status(401).json({ error: "No autenticado" });
     return false;
   }
   return true;
@@ -27,6 +27,35 @@ function parseId(raw: string | string[]): number | null {
   const s = Array.isArray(raw) ? raw[0] : raw;
   const n = parseInt(s, 10);
   return Number.isNaN(n) || n <= 0 ? null : n;
+}
+
+export function parseStrictNumber(val: any): { num: number; error?: string } {
+  if (val === null || val === undefined) {
+    return { num: NaN, error: "El valor no puede estar vacío." };
+  }
+  if (typeof val === "number") {
+    if (!Number.isFinite(val)) return { num: NaN, error: "Número no válido." };
+    return { num: val };
+  }
+  const str = String(val).trim();
+  if (str === "") return { num: NaN, error: "El valor no puede estar vacío." };
+
+  // Reject strings with non-numeric chars other than digits, single dot, or single comma
+  if (!/^-?\d+([.,]\d+)?$/.test(str)) {
+    return { num: NaN, error: `El valor '${val}' no es válido. Use solo dígitos con un separador decimal opcional (ej. 12.4).` };
+  }
+
+  // Reject ambiguous thousands separator format like "1.500" or "10.000"
+  if (/^\d+[.,]\d{3}$/.test(str)) {
+    return { num: NaN, error: `El formato '${val}' es ambiguo (puede interpretarse como mil o decimal). Escriba '1500' para mil quinientos o '1.5' para decimales.` };
+  }
+
+  const normalized = str.replace(",", ".");
+  const num = parseFloat(normalized);
+  if (!Number.isFinite(num)) {
+    return { num: NaN, error: `El valor '${val}' no es un número válido.` };
+  }
+  return { num };
 }
 
 async function getStockUmbral(): Promise<number> {
@@ -127,15 +156,24 @@ router.post("/productos", async (req, res): Promise<void> => {
   }
 
   if (!nombre || precio == null || stock == null) {
-    res.status(400).json({ error: "nombre, precio and stock are required" }); return;
+    res.status(400).json({ error: "nombre, precio y stock son requeridos" }); return;
   }
   if (typeof nombre !== "string" || nombre.trim().length === 0 || nombre.length > 200) {
     res.status(400).json({ error: "nombre inválido" }); return;
   }
-  const precioN = Number(precio);
-  const stockN  = Number(stock);
-  if (!Number.isFinite(precioN) || precioN < 0) { res.status(400).json({ error: "precio inválido" }); return; }
-  if (!Number.isFinite(stockN)  || stockN  < 0) { res.status(400).json({ error: "stock inválido" }); return; }
+
+  const parsedPrecio = parseStrictNumber(precio);
+  if (parsedPrecio.error || parsedPrecio.num < 0) {
+    res.status(400).json({ error: parsedPrecio.error || "precio inválido" }); return;
+  }
+
+  const parsedStock = parseStrictNumber(stock);
+  if (parsedStock.error || parsedStock.num < 0) {
+    res.status(400).json({ error: parsedStock.error || "stock inválido" }); return;
+  }
+
+  const precioN = Math.round(parsedPrecio.num * 100) / 100;
+  const stockN = Math.round(parsedStock.num * 1000) / 1000;
 
   const catIdN    = categoria_id    != null ? parseInt(categoria_id,    10) : null;
   const subCatIdN = subcategoria_id != null ? parseInt(subcategoria_id, 10) : null;
@@ -152,29 +190,57 @@ router.post("/productos", async (req, res): Promise<void> => {
   }
 
   try {
-    const [p] = await db.insert(productosTable).values({
-      codigo:          codigoFinal,
-      nombre:          nombre.trim(),
-      precio:          precioN,
-      costo:           costo  != null ? Number(costo) : null,
-      stock:           stockN,
-      stock_minimo:    stock_minimo != null ? Number(stock_minimo) : null,
-      categoria_id:    catIdN,
-      subcategoria_id: subCatIdN,
-      activo:          true,
-      imagen:          imagen ?? null,
-    }).returning();
+    const userId = (req as any).session.userId;
+
+    const result = await db.transaction(async (tx) => {
+      const [p] = await tx.insert(productosTable).values({
+        codigo:          codigoFinal,
+        nombre:          nombre.trim(),
+        precio:          precioN,
+        costo:           costo  != null ? Number(costo) : null,
+        stock:           stockN,
+        stock_minimo:    stock_minimo != null ? Number(stock_minimo) : null,
+        categoria_id:    catIdN,
+        subcategoria_id: subCatIdN,
+        activo:          true,
+        imagen:          imagen ?? null,
+      }).returning();
+
+      if (stockN > 0) {
+        await tx.insert(movimientosStockTable).values({
+          producto_id: p.id,
+          usuario_id: userId,
+          tipo: "stock_inicial",
+          motivo: "Alta de producto con stock inicial",
+          stock_anterior: 0,
+          renglones: JSON.stringify([stockN]),
+          total_ingresado: stockN,
+          stock_resultante: stockN,
+        });
+
+        await tx.insert(auditoriaTable).values({
+          usuario_id: userId,
+          accion: "stock_inicial",
+          entidad: "producto",
+          entidad_id: p.id,
+          detalle: `Alta de producto con stock inicial: +${stockN}`,
+          monto: stockN,
+        });
+      }
+
+      return p;
+    });
 
     const umbral = await getStockUmbral();
     const [cat]    = catIdN    ? await db.select({ nombre: categoriasTable.nombre }).from(categoriasTable).where(eq(categoriasTable.id, catIdN)) : [{ nombre: null }];
     const [subcat] = subCatIdN ? await db.select({ nombre: categoriasTable.nombre }).from(categoriasTable).where(eq(categoriasTable.id, subCatIdN)) : [{ nombre: null }];
 
     res.status(201).json({
-      ...p,
-      creado_en:          p.creado_en.toISOString(),
+      ...result,
+      creado_en:          result.creado_en.toISOString(),
       categoria_nombre:   cat?.nombre    ?? null,
       subcategoria_nombre: subcat?.nombre ?? null,
-      stock_estado:       stockEstado(p.stock, p.stock_minimo, umbral),
+      stock_estado:       stockEstado(result.stock, result.stock_minimo, umbral),
     });
   } catch (err: any) {
     if (
@@ -185,7 +251,8 @@ router.post("/productos", async (req, res): Promise<void> => {
       res.status(409).json({ error: "Ese código de barras ya está registrado" });
       return;
     }
-    throw err;
+    const status = typeof err?.status === "number" ? err.status : 500;
+    res.status(status).json({ error: status === 500 ? "Error interno del servidor" : err?.message || "Error al crear producto" });
   }
 });
 
@@ -198,16 +265,26 @@ router.get("/productos/import", async (_req, res): Promise<void> => {
 router.post("/productos/import", async (req, res): Promise<void> => {
   if (!requireAdmin(req, res)) return;
   const { rows } = req.body ?? {};
-  if (!Array.isArray(rows)) { res.status(400).json({ error: "rows must be an array" }); return; }
+  if (!Array.isArray(rows)) { res.status(400).json({ error: "rows debe ser un arreglo" }); return; }
   if (rows.length > 5000)   { res.status(400).json({ error: "Máximo 5000 filas por importación" }); return; }
 
+  const userId = (req as any).session.userId;
   let created = 0, updated = 0, errors = 0;
+
   for (const row of rows) {
     try {
       const { codigo, nombre, precio, costo, stock, categoria } = row;
       if (!nombre || typeof nombre !== "string" || precio == null) { errors++; continue; }
-      const precioN = Number(precio);
-      if (!Number.isFinite(precioN) || precioN < 0) { errors++; continue; }
+
+      const parsedPrecio = parseStrictNumber(precio);
+      if (parsedPrecio.error || parsedPrecio.num < 0) { errors++; continue; }
+
+      let stockN = 0;
+      if (stock !== undefined && stock !== null) {
+        const parsedStock = parseStrictNumber(stock);
+        if (parsedStock.error || parsedStock.num < 0) { errors++; continue; }
+        stockN = Math.round(parsedStock.num * 1000) / 1000;
+      }
 
       let categoria_id: number | null = null;
       if (categoria && typeof categoria === "string") {
@@ -223,17 +300,47 @@ router.post("/productos/import", async (req, res): Promise<void> => {
       if (codigo && typeof codigo === "string") {
         const [existing] = await db.select().from(productosTable).where(eq(productosTable.codigo, codigo));
         if (existing) {
+          const stockDiff = Math.round((stockN - existing.stock) * 1000) / 1000;
+
           await db.update(productosTable)
-            .set({ nombre: nombre.trim(), precio: precioN, costo: costo != null ? Number(costo) : null, stock: stock ?? existing.stock, categoria_id })
+            .set({ nombre: nombre.trim(), precio: parsedPrecio.num, costo: costo != null ? Number(costo) : null, stock: stockN, categoria_id })
             .where(eq(productosTable.id, existing.id));
+
+          if (Math.abs(stockDiff) > 0.0001) {
+            await db.insert(movimientosStockTable).values({
+              producto_id: existing.id,
+              usuario_id: userId,
+              tipo: "ajuste",
+              motivo: "Ajuste por importación de productos",
+              stock_anterior: existing.stock,
+              renglones: JSON.stringify([stockDiff]),
+              total_ingresado: stockDiff,
+              stock_resultante: stockN,
+            });
+          }
           updated++; continue;
         }
       }
-      await db.insert(productosTable).values({
+
+      const [newProd] = await db.insert(productosTable).values({
         codigo: codigo ?? null, nombre: nombre.trim().slice(0, 200),
-        precio: precioN, costo: costo != null ? Number(costo) : null,
-        stock: stock ?? 0, categoria_id, activo: true,
-      });
+        precio: parsedPrecio.num, costo: costo != null ? Number(costo) : null,
+        stock: stockN, categoria_id, activo: true,
+      }).returning();
+
+      if (stockN > 0) {
+        await db.insert(movimientosStockTable).values({
+          producto_id: newProd.id,
+          usuario_id: userId,
+          tipo: "stock_inicial",
+          motivo: "Stock inicial por importación",
+          stock_anterior: 0,
+          renglones: JSON.stringify([stockN]),
+          total_ingresado: stockN,
+          stock_resultante: stockN,
+        });
+      }
+
       created++;
     } catch { errors++; }
   }
@@ -282,7 +389,7 @@ router.get("/productos/:id", async (req, res): Promise<void> => {
 // ── POST /productos/:id/stock-ingreso ──────────────────────────────────────────
 router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
   if (!(req as any).session?.userId) {
-    res.status(401).json({ error: "Not authenticated" });
+    res.status(401).json({ error: "No autenticado" });
     return;
   }
   if (!requireAdmin(req, res)) return;
@@ -305,26 +412,20 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
 
   const validQuantities: number[] = [];
   for (const raw of rawList) {
-    if (raw === null || raw === undefined) {
-      res.status(400).json({ error: "La cantidad no puede estar vacía." });
+    const parsed = parseStrictNumber(raw);
+    if (parsed.error) {
+      res.status(400).json({ error: parsed.error });
       return;
     }
-    const str = String(raw).trim().replace(",", ".");
-    if (str === "") {
-      res.status(400).json({ error: "La cantidad no puede estar vacía." });
-      return;
-    }
-
-    const num = parseFloat(str);
-    if (!Number.isFinite(num) || num <= 0) {
+    if (parsed.num <= 0) {
       res.status(400).json({ error: `La cantidad '${raw}' no es válida. Debe ser un número mayor a cero.` });
       return;
     }
-    if (num > 100_000) {
+    if (parsed.num > 100_000) {
       res.status(400).json({ error: `La cantidad '${raw}' supera el límite máximo permitido (100.000 por renglón)` });
       return;
     }
-    const rounded = Math.round(num * 1000) / 1000;
+    const rounded = Math.round(parsed.num * 1000) / 1000;
     validQuantities.push(rounded);
   }
 
@@ -387,16 +488,15 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
 
     res.json({ ok: true, ...result });
   } catch (err: any) {
-    console.error("DEBUG ERROR IN STOCK INGRESO:", err);
     const status = typeof err?.status === "number" ? err.status : 500;
-    res.status(status).json({ error: err?.message || "Error al registrar el ingreso de stock" });
+    res.status(status).json({ error: status === 500 ? "Error interno del servidor" : err?.message || "Error al registrar el ingreso de stock" });
   }
 });
 
 // ── POST /productos/:id/stock-ingreso/:movimientoId/deshacer (Admin Only, 30s) ──
 router.post("/productos/:id/stock-ingreso/:movimientoId/deshacer", async (req, res): Promise<void> => {
   if (!(req as any).session?.userId) {
-    res.status(401).json({ error: "Not authenticated" });
+    res.status(401).json({ error: "No autenticado" });
     return;
   }
   if (!requireAdmin(req, res)) return;
@@ -420,8 +520,12 @@ router.post("/productos/:id/stock-ingreso/:movimientoId/deshacer", async (req, r
         throw Object.assign(new Error("Este ingreso ya se encuentra deshecho o anulado"), { status: 400 });
       }
 
+      if (mov.tipo !== "ingreso") {
+        throw Object.assign(new Error("Solo se pueden deshacer movimientos de tipo ingreso"), { status: 400 });
+      }
+
       const elapsedSeconds = (Date.now() - new Date(mov.fecha).getTime()) / 1000;
-      if (elapsedSeconds > 35) { // allow a small grace window over 30s for network delay
+      if (elapsedSeconds > 35) { // grace window over 30s
         throw Object.assign(new Error("El tiempo de 30 segundos para deshacer este ingreso ha expirado"), { status: 400 });
       }
 
@@ -430,14 +534,14 @@ router.post("/productos/:id/stock-ingreso/:movimientoId/deshacer", async (req, r
         throw Object.assign(new Error("Producto no encontrado"), { status: 404 });
       }
 
-      if (prod.stock < mov.total_ingresado) {
+      // Atomic conditional update enforcing stock sufficiency
+      const updateResult = await tx.run(sql`UPDATE productos SET stock = ROUND(stock - ${mov.total_ingresado}, 3) WHERE id = ${id} AND stock >= ${mov.total_ingresado}`);
+
+      if (updateResult.rowsAffected === 0) {
         throw Object.assign(new Error(`Stock insuficiente para deshacer el ingreso. Stock actual: ${prod.stock}, ingreso a deshacer: ${mov.total_ingresado}`), { status: 400 });
       }
 
       const stockAnterior = prod.stock;
-
-      await tx.run(sql`UPDATE productos SET stock = ROUND(stock - ${mov.total_ingresado}, 3) WHERE id = ${id}`);
-
       const [updatedProd] = await tx.select({ stock: productosTable.stock }).from(productosTable).where(eq(productosTable.id, id));
       const stockResultante = updatedProd.stock;
 
@@ -480,14 +584,14 @@ router.post("/productos/:id/stock-ingreso/:movimientoId/deshacer", async (req, r
     res.json({ ok: true, ...result });
   } catch (err: any) {
     const status = typeof err?.status === "number" ? err.status : 500;
-    res.status(status).json({ error: err?.message || "Error al deshacer el ingreso de stock" });
+    res.status(status).json({ error: status === 500 ? "Error interno del servidor" : err?.message || "Error al deshacer el ingreso de stock" });
   }
 });
 
 // ── POST /productos/:id/stock-historial/:movimientoId/anular (Admin Only) ───────
 router.post("/productos/:id/stock-historial/:movimientoId/anular", async (req, res): Promise<void> => {
   if (!(req as any).session?.userId) {
-    res.status(401).json({ error: "Not authenticated" });
+    res.status(401).json({ error: "No autenticado" });
     return;
   }
   if (!requireAdmin(req, res)) return;
@@ -526,14 +630,14 @@ router.post("/productos/:id/stock-historial/:movimientoId/anular", async (req, r
         throw Object.assign(new Error("Producto no encontrado"), { status: 404 });
       }
 
-      if (prod.stock < mov.total_ingresado) {
+      // Atomic conditional update enforcing stock sufficiency
+      const updateResult = await tx.run(sql`UPDATE productos SET stock = ROUND(stock - ${mov.total_ingresado}, 3) WHERE id = ${id} AND stock >= ${mov.total_ingresado}`);
+
+      if (updateResult.rowsAffected === 0) {
         throw Object.assign(new Error(`Stock insuficiente para anular el ingreso. Stock actual: ${prod.stock}, ingreso a anular: ${mov.total_ingresado}`), { status: 400 });
       }
 
       const stockAnterior = prod.stock;
-
-      await tx.run(sql`UPDATE productos SET stock = ROUND(stock - ${mov.total_ingresado}, 3) WHERE id = ${id}`);
-
       const [updatedProd] = await tx.select({ stock: productosTable.stock }).from(productosTable).where(eq(productosTable.id, id));
       const stockResultante = updatedProd.stock;
 
@@ -578,14 +682,14 @@ router.post("/productos/:id/stock-historial/:movimientoId/anular", async (req, r
     res.json({ ok: true, ...result });
   } catch (err: any) {
     const status = typeof err?.status === "number" ? err.status : 500;
-    res.status(status).json({ error: err?.message || "Error al anular el ingreso de stock" });
+    res.status(status).json({ error: status === 500 ? "Error interno del servidor" : err?.message || "Error al anular el ingreso de stock" });
   }
 });
 
 // ── GET /productos/:id/stock-historial (Admin Only) ───────────────────────────
 router.get("/productos/:id/stock-historial", async (req, res): Promise<void> => {
   if (!(req as any).session?.userId) {
-    res.status(401).json({ error: "Not authenticated" });
+    res.status(401).json({ error: "No autenticado" });
     return;
   }
   if (!requireAdmin(req, res)) return;
@@ -634,7 +738,7 @@ router.get("/productos/:id/stock-historial", async (req, res): Promise<void> => 
 // ── PUT /productos/:id ─────────────────────────────────────────────────────────
 router.put("/productos/:id", async (req, res): Promise<void> => {
   if (!(req as any).session?.userId) {
-    res.status(401).json({ error: "Not authenticated" });
+    res.status(401).json({ error: "No autenticado" });
     return;
   }
   if (!requireAdmin(req, res)) return;
@@ -681,27 +785,28 @@ router.put("/productos/:id", async (req, res): Promise<void> => {
     updates.nombre = nombre.trim();
   }
   if (precio != null) {
-    const v = Number(precio);
-    if (!Number.isFinite(v) || v < 0) { res.status(400).json({ error: "precio inválido" }); return; }
-    updates.precio = v;
+    const parsedPrecio = parseStrictNumber(precio);
+    if (parsedPrecio.error || parsedPrecio.num < 0) { res.status(400).json({ error: parsedPrecio.error || "precio inválido" }); return; }
+    updates.precio = Math.round(parsedPrecio.num * 100) / 100;
   }
-  if (costo !== undefined)         updates.costo          = costo != null ? Number(costo) : null;
+  if (costo !== undefined) updates.costo = costo != null ? Number(costo) : null;
 
   let stockChanged = false;
   let stockDifference = 0;
   let newStockVal = currentProd.stock;
 
   if (stock != null) {
-    const v = Number(stock);
-    if (!Number.isFinite(v) || v < 0) { res.status(400).json({ error: "stock inválido" }); return; }
-    newStockVal = Math.round(v * 1000) / 1000;
+    const parsedStock = parseStrictNumber(stock);
+    if (parsedStock.error || parsedStock.num < 0) { res.status(400).json({ error: parsedStock.error || "stock inválido" }); return; }
+
+    newStockVal = Math.round(parsedStock.num * 1000) / 1000;
     stockDifference = Math.round((newStockVal - currentProd.stock) * 1000) / 1000;
 
     if (Math.abs(stockDifference) > 0.0001) {
       stockChanged = true;
       if (stockDifference < 0) {
         if (!motivo || typeof motivo !== "string" || motivo.trim().length === 0) {
-          res.status(400).json({ error: "Debe especificar un motivo para disminuir el stock" });
+          res.status(400).json({ error: "Debe especificar un motivo obligatorio para disminuir el stock" });
           return;
         }
       }
@@ -760,7 +865,6 @@ router.put("/productos/:id", async (req, res): Promise<void> => {
       stock_estado:        stockEstado(p.stock, p.stock_minimo, umbral),
     });
   } catch (err: any) {
-    console.error("DEBUG ERROR IN PRODUCT UPDATE:", err);
     if (
       err?.message?.includes("UNIQUE constraint failed") ||
       err?.code === "SQLITE_CONSTRAINT_UNIQUE" ||
@@ -769,7 +873,8 @@ router.put("/productos/:id", async (req, res): Promise<void> => {
       res.status(409).json({ error: "Ese código de barras ya está registrado" });
       return;
     }
-    throw err;
+    const status = typeof err?.status === "number" ? err.status : 500;
+    res.status(status).json({ error: status === 500 ? "Error interno del servidor" : err?.message || "Error al actualizar producto" });
   }
 });
 

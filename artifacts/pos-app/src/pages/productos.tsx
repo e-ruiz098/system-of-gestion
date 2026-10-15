@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import {
   Search, Plus, Edit, Trash2, Loader2, History, Package,
   ChevronDown, ChevronRight, Download, Image as ImageIcon, Upload, X, Tag, Barcode,
-  PlusCircle, AlertTriangle, ArrowRight, Undo2, Ban, CheckCircle2,
+  PlusCircle, AlertTriangle, ArrowRight, Undo2, Ban, CheckCircle2, SlidersHorizontal,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Label } from '@/components/ui/label';
@@ -20,9 +20,26 @@ import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useAuth } from '@/contexts/AuthContext';
-import { useGetConfig } from '@workspace/api-client-react';
 import { useCurrency } from '@/hooks/use-currency';
 import { useBarcodeScanner, cleanBarcode } from '@/hooks/use-barcode-scanner';
+
+// ── Strict Number Validation Helper ──────────────────────────────────────────
+function validateStrictNumber(val: string): { valid: boolean; num: number; error: string | null } {
+  if (!val || val.trim() === '') return { valid: false, num: 0, error: 'El valor no puede estar vacío.' };
+  const str = val.trim();
+  if (!/^-?\d+([.,]\d+)?$/.test(str)) {
+    return { valid: false, num: 0, error: `El valor '${val}' no es válido. Use solo dígitos con un separador decimal (ej. 12.4).` };
+  }
+  if (/^\d+[.,]\d{3}$/.test(str)) {
+    return { valid: false, num: 0, error: `El formato '${val}' es ambiguo. Escriba '1500' para mil quinientos o '1.5' para decimales.` };
+  }
+  const norm = str.replace(',', '.');
+  const n = parseFloat(norm);
+  if (!Number.isFinite(n)) {
+    return { valid: false, num: 0, error: 'Número no válido.' };
+  }
+  return { valid: true, num: Math.round(n * 1000) / 1000, error: null };
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface CatRow { id: number; nombre: string; parent_id: number | null }
@@ -37,7 +54,7 @@ function StockBadge({ estado, stock }: { estado?: string; stock: number }) {
 
 // ── Modal Agregar Stock Acumulativo ───────────────────────────────────────────
 function AgregarStockModal({
-  product,
+  product: initialProduct,
   open,
   onClose,
 }: {
@@ -61,8 +78,23 @@ function AgregarStockModal({
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
+  // Fetch live product data so stock is always fresh after undo, void or entry
+  const { data: liveProduct } = useQuery<any>({
+    queryKey: ['/api/productos', initialProduct?.id],
+    queryFn: async () => {
+      if (!initialProduct?.id) return null;
+      const res = await fetch(`/api/productos/${initialProduct.id}`);
+      if (!res.ok) return null;
+      return res.json();
+    },
+    enabled: !!initialProduct?.id && open,
+    refetchInterval: 1000,
+  });
+
+  const product = liveProduct || initialProduct;
+
   // Fetch product movement history
-  const { data: historial, isLoading: loadingHistorial } = useQuery<any[]>({
+  const { data: historial, isLoading: loadingHistorial, refetch: refetchHistorial } = useQuery<any[]>({
     queryKey: ['/api/productos', product?.id, 'stock-historial'],
     queryFn: async () => {
       if (!product?.id) return [];
@@ -135,19 +167,21 @@ function AgregarStockModal({
     }
   };
 
-  // Row validation & live calculations
+  // Row validation & live calculations using strict parser
   const rowStatuses = useMemo(() => {
     return rows.map(r => {
       if (!r || r.trim() === '') return { empty: true, valid: false, error: null, value: 0 };
-      const normalized = r.trim().replace(',', '.');
-      const val = parseFloat(normalized);
-      if (!Number.isFinite(val) || val <= 0) {
+      const res = validateStrictNumber(r);
+      if (!res.valid) {
+        return { empty: false, valid: false, error: res.error, value: 0 };
+      }
+      if (res.num <= 0) {
         return { empty: false, valid: false, error: 'Debe ser un número mayor a 0', value: 0 };
       }
-      if (val > 100000) {
+      if (res.num > 100000) {
         return { empty: false, valid: false, error: 'Supera el máximo de 100.000 por renglón', value: 0 };
       }
-      return { empty: false, valid: true, error: null, value: Math.round(val * 1000) / 1000 };
+      return { empty: false, valid: true, error: null, value: res.num };
     });
   }, [rows]);
 
@@ -167,10 +201,10 @@ function AgregarStockModal({
   const currentStock = product?.stock ?? 0;
   const nuevoStock = Math.round((currentStock + totalIngresado) * 1000) / 1000;
 
-  // High quantity warning requirement
+  // High quantity warning requirement: > 10x current stock OR > 100 when current stock is 0
   const isHighQuantityWarning = useMemo(() => {
     if (currentStock === 0) {
-      return totalIngresado > 1000;
+      return totalIngresado > 100;
     }
     return totalIngresado > currentStock * 10;
   }, [currentStock, totalIngresado]);
@@ -195,6 +229,7 @@ function AgregarStockModal({
         description: `Se agregaron +${data.total_ingresado}. Nuevo stock: ${data.stock_resultante}`,
       });
       queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
+      refetchHistorial();
 
       // Start 30 second undo timer
       if (data.movimiento_id) {
@@ -237,6 +272,7 @@ function AgregarStockModal({
       });
       setUndoInfo(null);
       queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
+      refetchHistorial();
     },
     onError: (err: any) => {
       toast({
@@ -269,6 +305,7 @@ function AgregarStockModal({
       setAnularMov(null);
       setMotivoAnulacion('');
       queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
+      refetchHistorial();
     },
     onError: (err: any) => {
       toast({
@@ -436,33 +473,40 @@ function AgregarStockModal({
             {/* Historial de Ingresos de este producto */}
             <div className="border-t border-border pt-3">
               <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
-                <History className="w-3.5 h-3.5" /> Historial de ingresos
+                <History className="w-3.5 h-3.5" /> Historial de movimientos
               </h4>
 
               {loadingHistorial ? (
                 <div className="py-4 text-center text-xs text-muted-foreground">Cargando historial...</div>
               ) : !historial || historial.length === 0 ? (
-                <p className="text-xs text-muted-foreground italic py-2">Sin ingresos acumulativos registrados aún.</p>
+                <p className="text-xs text-muted-foreground italic py-2">Sin movimientos registrados aún.</p>
               ) : (
                 <div className="space-y-1.5 max-h-40 overflow-y-auto text-xs font-mono pr-1">
                   {historial.map((h: any) => {
                     const fechaStr = new Date(h.fecha).toLocaleString('es-AR', {
                       day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
                     });
-                    const formattedRenglones = h.renglones_parsed?.map((q: number) => `${q >= 0 ? '+' : ''}${q}`).join(' ') || '';
+
+                    const sign = h.total_ingresado > 0 ? '+' : '';
+                    const labelTipo = h.tipo === 'stock_inicial' ? 'Stock Inicial'
+                      : h.tipo === 'ajuste' ? 'Ajuste'
+                      : h.tipo === 'anulacion' ? 'Anulación'
+                      : 'Ingreso';
 
                     return (
                       <div key={h.id} className={`p-2 rounded border space-y-0.5 ${h.anulado ? 'bg-destructive/5 border-destructive/20 opacity-70' : 'bg-muted/40 border-border/50'}`}>
                         <div className="flex justify-between text-[11px] text-muted-foreground">
                           <span>{fechaStr}</span>
                           <div className="flex items-center gap-1.5">
+                            <Badge variant="outline" className="text-[9px] px-1 py-0">{labelTipo}</Badge>
                             <span className="font-bold text-foreground">{h.usuario_nombre || 'Usuario'}</span>
                             {h.anulado && <Badge variant="outline" className="text-[9px] px-1 py-0 text-destructive border-destructive/30">Anulado</Badge>}
                           </div>
                         </div>
                         <div className="text-foreground leading-snug flex justify-between items-center">
                           <div>
-                            anterior {h.stock_anterior} — <span className="text-primary font-bold">{formattedRenglones}</span> — total <strong className="text-primary">+{h.total_ingresado}</strong> — resultante <strong>{h.stock_resultante}</strong>
+                            anterior {h.stock_anterior} — <span className="text-primary font-bold">{sign}{h.total_ingresado}</span> — resultante <strong>{h.stock_resultante}</strong>
+                            {h.motivo && <p className="text-[10px] text-muted-foreground italic mt-0.5">Motivo: {h.motivo}</p>}
                             {h.anulado && h.motivo_anulacion && (
                               <p className="text-[10px] text-destructive italic mt-0.5">Motivo anulación: {h.motivo_anulacion}</p>
                             )}
@@ -544,7 +588,7 @@ function AgregarStockModal({
                   ¡ADVERTENCIA DE CANTIDAD ELEVADA!
                 </p>
                 <p className="text-[11px] leading-relaxed">
-                  La cantidad a sumar (<strong>+{totalIngresado}</strong>) supera más de 10 veces el stock actual (<strong>{currentStock}</strong>). Asegúrese de que no sea un error tipográfico.
+                  La cantidad a sumar (<strong>+{totalIngresado}</strong>) {currentStock === 0 ? 'supera un umbral elevado (más de 100)' : `supera más de 10 veces el stock actual (${currentStock})`}. Asegúrese de que no sea un error tipográfico.
                 </p>
               </div>
             )}
@@ -642,6 +686,175 @@ function AgregarStockModal({
               </Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+// ── Corregir Stock Modal (In-page Correction with Mandatory Reason) ─────────
+function CorregirStockModal({
+  product,
+  open,
+  onClose,
+}: {
+  product: any | null;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [targetStockStr, setTargetStockStr] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [showConfirm, setShowConfirm] = useState(false);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  useEffect(() => {
+    if (open && product) {
+      setTargetStockStr(String(product.stock ?? 0));
+      setMotivo('');
+      setShowConfirm(false);
+    }
+  }, [open, product?.id]);
+
+  const parsed = useMemo(() => validateStrictNumber(targetStockStr), [targetStockStr]);
+
+  const currentStock = product?.stock ?? 0;
+  const targetStock = parsed.num;
+  const diff = Math.round((targetStock - currentStock) * 1000) / 1000;
+
+  const updateMutation = useUpdateProducto();
+
+  const handleOpenConfirm = () => {
+    if (!parsed.valid || parsed.num < 0) {
+      toast({ title: 'Stock inválido', description: parsed.error || 'Ingrese un número válido no negativo.', variant: 'destructive' });
+      return;
+    }
+    if (diff < 0 && !motivo.trim()) {
+      toast({ title: 'Motivo requerido', description: 'Debe especificar un motivo obligatorio para disminuir el stock.', variant: 'destructive' });
+      return;
+    }
+    setShowConfirm(true);
+  };
+
+  const handleExecuteCorrection = () => {
+    if (!product) return;
+    updateMutation.mutate({
+      id: product.id,
+      data: {
+        stock: targetStock,
+        motivo: motivo.trim() || 'Corrección manual de stock',
+      } as any,
+    }, {
+      onSuccess: () => {
+        toast({ title: 'Stock corregido con éxito', description: `Stock anterior: ${currentStock} -> Nuevo stock: ${targetStock}` });
+        queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
+        setShowConfirm(false);
+        onClose();
+      },
+      onError: (err: any) => {
+        toast({ title: 'Error al corregir stock', description: err?.message || 'No se pudo guardar la corrección.', variant: 'destructive' });
+      },
+    });
+  };
+
+  if (!product) return null;
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={o => { if (!o) onClose(); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold flex items-center gap-2">
+              <SlidersHorizontal className="w-5 h-5 text-primary" /> Corregir Stock — {product.nombre}
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Establezca el valor real en estantería. Si disminuye, debe incluir un motivo obligatorio.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="grid grid-cols-2 gap-3 p-3 rounded-lg bg-muted/40 border border-border text-xs">
+              <div>
+                <span className="text-muted-foreground block">Stock actual:</span>
+                <span className="font-mono font-bold text-sm text-foreground">{currentStock}</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground block">Diferencia:</span>
+                <span className={`font-mono font-bold text-sm ${diff < 0 ? 'text-destructive' : diff > 0 ? 'text-primary' : 'text-muted-foreground'}`}>
+                  {diff > 0 ? `+${diff}` : diff}
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">Nuevo Stock Correcto *</Label>
+              <Input
+                value={targetStockStr}
+                onChange={e => setTargetStockStr(e.target.value)}
+                placeholder="Ej. 25"
+                className={`font-mono font-bold text-sm ${!parsed.valid && targetStockStr ? 'border-destructive focus-visible:ring-destructive' : ''}`}
+                autoFocus
+              />
+              {!parsed.valid && targetStockStr && (
+                <p className="text-[11px] text-destructive font-medium">{parsed.error}</p>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold">
+                Motivo del ajuste {diff < 0 && <span className="text-destructive">* (Obligatorio)</span>}
+              </Label>
+              <Input
+                value={motivo}
+                onChange={e => setMotivo(e.target.value)}
+                placeholder="Ej. Rotura, conteo de inventario, pérdida"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={onClose} disabled={updateMutation.isPending}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleOpenConfirm}
+              disabled={updateMutation.isPending || !parsed.valid || (diff < 0 && !motivo.trim())}
+              className="gap-2 font-bold"
+            >
+              Revisar y Guardar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmation Step for Stock Correction */}
+      <Dialog open={showConfirm} onOpenChange={setShowConfirm}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold flex items-center gap-2">
+              <AlertTriangle className="w-5 h-5 text-amber-500" /> Confirmar Corrección de Stock
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-2 py-2 text-xs">
+            <div className="p-3 rounded bg-muted/40 border border-border space-y-1">
+              <p><strong>Producto:</strong> {product.nombre}</p>
+              <p><strong>Stock Anterior:</strong> {currentStock}</p>
+              <p><strong>Nuevo Stock:</strong> <span className="font-bold text-primary">{targetStock}</span></p>
+              <p><strong>Ajuste:</strong> {diff > 0 ? `+${diff}` : diff}</p>
+              {motivo && <p><strong>Motivo:</strong> {motivo}</p>}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowConfirm(false)} disabled={updateMutation.isPending}>
+              Atrás
+            </Button>
+            <Button onClick={handleExecuteCorrection} disabled={updateMutation.isPending} className="font-bold gap-2">
+              {updateMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+              Confirmar Ajuste
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>
@@ -804,8 +1017,12 @@ export default function Productos() {
   const [imagePreview,     setImagePreview]    = useState<string | null>(null);
   const [isUploadingImage, setIsUploadingImage]= useState(false);
 
-  // Modal para "+ Agregar stock" acumulativo
+  // Modals for stock operations (Unstacked: Edit dialog is closed before opening these)
   const [stockProductModal, setStockProductModal] = useState<any | null>(null);
+  const [corregirStockModal, setCorregirStockModal] = useState<any | null>(null);
+
+  // New product creation confirmation modal
+  const [showCreateConfirm, setShowCreateConfirm] = useState<any | null>(null);
 
   const [formMainCatId,    setFormMainCatId]   = useState<string>('');
   const [formSubCatId,     setFormSubCatId]    = useState<string>('');
@@ -878,6 +1095,20 @@ export default function Productos() {
       toast({ title: "Categoría requerida", description: "Seleccioná una categoría principal.", variant: "destructive" }); return;
     }
 
+    const stockInputVal = (fd.get('stock') as string) || '0';
+    const parsedStock = validateStrictNumber(stockInputVal);
+    if (isAddMode && (!parsedStock.valid || parsedStock.num < 0)) {
+      toast({ title: "Stock inicial inválido", description: parsedStock.error || "Ingrese un número válido.", variant: "destructive" });
+      return;
+    }
+
+    const precioInputVal = (fd.get('precio') as string) || '0';
+    const parsedPrecio = validateStrictNumber(precioInputVal);
+    if (!parsedPrecio.valid || parsedPrecio.num < 0) {
+      toast({ title: "Precio inválido", description: parsedPrecio.error || "Ingrese un número válido.", variant: "destructive" });
+      return;
+    }
+
     let imagenFinal: string | null | undefined = undefined;
     if (imagePreview && imagePreview.startsWith('data:')) {
       try {
@@ -897,10 +1128,10 @@ export default function Productos() {
     const trimmedCodigo = cleanBarcode(barcodeScanner.barcode);
     const codigoFinal = trimmedCodigo.length > 0 ? trimmedCodigo : undefined;
 
-    const data: any = {
+    const dataPayload: any = {
       codigo:          codigoFinal,
       nombre:          (fd.get('nombre') as string)?.trim(),
-      precio:          Number((fd.get('precio') as string)?.replace(',', '.')),
+      precio:          parsedPrecio.num,
       costo:           (fd.get('costo') as string) ? Number((fd.get('costo') as string)?.replace(',', '.')) : undefined,
       stock_minimo:    (fd.get('stock_minimo') as string) ? Number((fd.get('stock_minimo') as string)?.replace(',', '.')) : undefined,
       categoria_id:    Number(formMainCatId),
@@ -909,27 +1140,15 @@ export default function Productos() {
     };
 
     if (isAddMode) {
-      data.stock = Number((fd.get('stock') as string)?.replace(',', '.'));
-      createMutation.mutate({ data }, {
-        onSuccess: () => {
-          queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
-          closeForm();
-          toast({ title: "Producto creado con éxito" });
-        },
-        onError: (err: any) => {
-          const msg = err?.data?.error || err?.message || "No se pudo crear el producto";
-          if (typeof msg === 'string' && (msg.toLowerCase().includes("ya está registrado") || msg.toLowerCase().includes("duplicado"))) {
-            setCodigoError("Ese código de barras ya está registrado");
-          }
-          toast({
-            title: "Error al guardar producto",
-            description: msg,
-            variant: "destructive",
-          });
-        },
-      });
+      dataPayload.stock = parsedStock.num;
+      if (parsedStock.num > 0) {
+        // Require confirmation step for creation with stock > 0
+        setShowCreateConfirm(dataPayload);
+        return;
+      }
+      executeCreate(dataPayload);
     } else if (editItem) {
-      updateMutation.mutate({ id: editItem.id, data }, {
+      updateMutation.mutate({ id: editItem.id, data: dataPayload }, {
         onSuccess: () => {
           queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
           closeForm();
@@ -940,14 +1159,28 @@ export default function Productos() {
           if (typeof msg === 'string' && (msg.toLowerCase().includes("ya está registrado") || msg.toLowerCase().includes("duplicado"))) {
             setCodigoError("Ese código de barras ya está registrado");
           }
-          toast({
-            title: "Error al guardar producto",
-            description: msg,
-            variant: "destructive",
-          });
+          toast({ title: "Error al guardar producto", description: msg, variant: "destructive" });
         },
       });
     }
+  };
+
+  const executeCreate = (data: any) => {
+    createMutation.mutate({ data }, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
+        closeForm();
+        setShowCreateConfirm(null);
+        toast({ title: "Producto creado con éxito" });
+      },
+      onError: (err: any) => {
+        const msg = err?.data?.error || err?.message || "No se pudo crear el producto";
+        if (typeof msg === 'string' && (msg.toLowerCase().includes("ya está registrado") || msg.toLowerCase().includes("duplicado"))) {
+          setCodigoError("Ese código de barras ya está registrado");
+        }
+        toast({ title: "Error al guardar producto", description: msg, variant: "destructive" });
+      },
+    });
   };
 
   const handleToggleActive = (id: number, current: boolean) => {
@@ -1152,7 +1385,10 @@ export default function Productos() {
                                 variant="outline"
                                 size="sm"
                                 className="h-7 text-[11px] px-2 gap-1 text-primary border-primary/30 hover:bg-primary/10 shrink-0 font-semibold"
-                                onClick={() => setStockProductModal(p)}
+                                onClick={() => {
+                                  closeForm(); // Close edit form first so dialogs don't stack
+                                  setStockProductModal(p);
+                                }}
                                 title="Agregar stock acumulativo"
                               >
                                 <Plus className="w-3 h-3" />
@@ -1199,6 +1435,65 @@ export default function Productos() {
           onClose={() => setStockProductModal(null)}
         />
       )}
+
+      {/* ── MODAL CORREGIR STOCK DE PRODUCTO ───────────────────────────── */}
+      {isAdmin && corregirStockModal && (
+        <CorregirStockModal
+          product={corregirStockModal}
+          open={!!corregirStockModal}
+          onClose={() => setCorregirStockModal(null)}
+        />
+      )}
+
+      {/* ── CONFIRM NEW PRODUCT CREATION WITH INITIAL STOCK ─────────────── */}
+      <Dialog open={!!showCreateConfirm} onOpenChange={o => { if (!o) setShowCreateConfirm(null); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5 text-primary" /> Confirmar Alta con Stock Inicial
+            </DialogTitle>
+            <DialogDescription className="text-xs text-muted-foreground">
+              Se creará el producto registrando el stock inicial en el historial.
+            </DialogDescription>
+          </DialogHeader>
+
+          {showCreateConfirm && (
+            <div className="space-y-3 py-2 text-xs">
+              <div className="p-3.5 rounded-lg bg-muted/40 border border-border space-y-1.5">
+                <p><strong>Nombre:</strong> {showCreateConfirm.nombre}</p>
+                <p><strong>Precio:</strong> {formatMoney(showCreateConfirm.precio)}</p>
+                <p><strong>Stock Inicial:</strong> <span className="font-bold text-primary text-sm font-mono">+{showCreateConfirm.stock}</span></p>
+              </div>
+
+              {showCreateConfirm.stock > 100 && (
+                <div className="p-3 rounded-lg bg-amber-500/15 border border-amber-500/40 text-amber-700 dark:text-amber-400 space-y-1">
+                  <p className="font-bold text-xs flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500" />
+                    ¡ADVERTENCIA DE STOCK ELEVADO!
+                  </p>
+                  <p className="text-[11px]">
+                    El stock inicial ingresado (<strong>+{showCreateConfirm.stock}</strong>) es elevado. Verifique que no sea un error.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowCreateConfirm(null)} disabled={createMutation.isPending}>
+              Atrás
+            </Button>
+            <Button
+              onClick={() => executeCreate(showCreateConfirm)}
+              disabled={createMutation.isPending}
+              className="font-bold gap-2"
+            >
+              {createMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+              Confirmar y Crear
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ── ADD / EDIT MODAL ──────────────────────────────────────────────── */}
       {isAdmin && (
@@ -1296,15 +1591,15 @@ export default function Productos() {
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="precio">Precio de Venta *</Label>
-                  <Input id="precio" name="precio" type="number" step="0.01" defaultValue={editItem?.precio} required />
+                  <Input id="precio" name="precio" type="text" defaultValue={editItem?.precio} required />
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="costo">Precio de Compra</Label>
-                  <Input id="costo" name="costo" type="number" step="0.01" defaultValue={editItem?.costo || ''} />
+                  <Input id="costo" name="costo" type="text" defaultValue={editItem?.costo || ''} />
                 </div>
 
-                {/* Stock field: Editable on create, read-only with "+ Agregar stock" button on edit */}
-                <div className="space-y-1.5">
+                {/* Stock field: Editable on create, read-only with "+ Agregar stock" and "Corregir stock" buttons on edit */}
+                <div className="space-y-1.5 col-span-2">
                   <Label htmlFor="stock">Stock Actual *</Label>
                   {isAddMode ? (
                     <Input
@@ -1312,31 +1607,46 @@ export default function Productos() {
                       name="stock"
                       type="text"
                       inputMode="decimal"
-                      step="any"
                       defaultValue={0}
                       required
                     />
                   ) : (
-                    <div className="flex gap-2 items-center">
+                    <div className="flex gap-2 items-center flex-wrap">
                       <Input
                         id="stock"
                         name="stock_readonly"
                         type="text"
                         value={editItem?.stock ?? 0}
                         readOnly
-                        className="bg-muted font-mono font-bold cursor-not-allowed"
+                        className="bg-muted font-mono font-bold cursor-not-allowed w-28"
                       />
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
                         onClick={() => {
-                          setStockProductModal(editItem);
+                          const item = editItem;
+                          closeForm(); // Close edit form first so dialogs don't stack!
+                          setStockProductModal(item);
                         }}
                         className="shrink-0 text-xs font-semibold border-primary/30 text-primary hover:bg-primary/10 gap-1 h-9"
                       >
                         <Plus className="w-3.5 h-3.5" />
                         Agregar stock
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const item = editItem;
+                          closeForm(); // Close edit form first so dialogs don't stack!
+                          setCorregirStockModal(item);
+                        }}
+                        className="shrink-0 text-xs font-semibold border-muted-foreground/30 text-foreground hover:bg-muted gap-1 h-9"
+                      >
+                        <SlidersHorizontal className="w-3.5 h-3.5" />
+                        Corregir stock
                       </Button>
                     </div>
                   )}

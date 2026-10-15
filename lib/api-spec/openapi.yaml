@@ -1176,7 +1176,7 @@ components:
           type: ["string", "null"]
         tipo:
           type: string
-          enum: [ingreso, ajuste, anulacion]
+          enum: [stock_inicial, ingreso, ajuste, anulacion]
         motivo:
           type: ["string", "null"]
         stock_anterior:
