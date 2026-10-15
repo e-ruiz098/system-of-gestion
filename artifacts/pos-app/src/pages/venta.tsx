@@ -19,6 +19,7 @@ import { useBarcodeScanner, cleanBarcode, matchProductByBarcode } from '@/hooks/
 import { calcularRedondeo } from '@/utils/rounding';
 
 interface CartItem {
+  cartItemId: string;
   id: number;
   nombre: string;
   codigo: string | null | undefined;
@@ -27,6 +28,103 @@ interface CartItem {
   cartQty: number;
   subtotal: number;
   imagen?: string | null;
+}
+
+interface SaleSnapshot {
+  ticketNumber: number | null;
+  items: Array<{
+    id: number;
+    nombre: string;
+    codigo: string | null | undefined;
+    precio: number;
+    cartQty: number;
+    subtotal: number;
+  }>;
+  subtotal: number;
+  ajusteRedondeo: number;
+  cartTotal: number;
+  buyerName: string;
+  fecha: string;
+}
+
+// ── Componente separado de Ticket de Impresión (Evita reglas de hooks violadas) ─
+function TicketPrint({ snapshot, config, formatMoney }: {
+  snapshot: SaleSnapshot | null;
+  config: any;
+  formatMoney: (n: number) => string;
+}) {
+  const groupedItems = useMemo(() => {
+    if (!snapshot) return [];
+    const groups: {
+      id: number;
+      nombre: string;
+      codigo: string | null | undefined;
+      precio: number;
+      cartQty: number;
+      subtotal: number;
+    }[] = [];
+    for (const item of snapshot.items) {
+      const existing = groups.find(
+        g => g.id === item.id && Math.abs(g.precio - item.precio) < 0.001
+      );
+      if (existing) {
+        existing.cartQty = Math.round((existing.cartQty + item.cartQty) * 1000) / 1000;
+        existing.subtotal += item.subtotal;
+      } else {
+        groups.push({
+          id: item.id,
+          nombre: item.nombre,
+          codigo: item.codigo,
+          precio: item.precio,
+          cartQty: item.cartQty,
+          subtotal: item.subtotal,
+        });
+      }
+    }
+    return groups;
+  }, [snapshot]);
+
+  if (!snapshot || !config?.emite_tickets) return null;
+
+  return (
+    <div className="ticket-print p-6 text-sm" style={{ display: 'none' }}>
+      <div className="text-center mb-4">
+        <h1 className="text-xl font-bold">{config?.nombre_empresa || 'Empresa'}</h1>
+        <p className="text-muted-foreground">{config?.direccion || ''}</p>
+        <p className="text-muted-foreground">{config?.telefono || ''}</p>
+      </div>
+      <div className="border-t border-b py-2 mb-3">
+        <p><strong>Ticket #:</strong> {snapshot.ticketNumber}</p>
+        <p><strong>Fecha:</strong> {snapshot.fecha}</p>
+        {snapshot.buyerName.trim() && <p><strong>Comprador:</strong> {snapshot.buyerName.trim()}</p>}
+      </div>
+
+      <div className="mb-4 border-b pb-3">
+        <div className="grid grid-cols-[3rem_1fr_6rem_6rem] font-bold border-b pb-1 mb-2 text-xs uppercase">
+          <span>Cant.</span>
+          <span>Producto</span>
+          <span className="text-right">P. Unit.</span>
+          <span className="text-right">Subtotal</span>
+        </div>
+        {groupedItems.map((line, i) => (
+          <div key={i} className="grid grid-cols-[3rem_1fr_6rem_6rem] py-1 border-b border-dashed border-border/50 text-xs">
+            <span className="font-bold">{line.cartQty}</span>
+            <span className="truncate pr-1">{line.nombre}</span>
+            <span className="text-right font-mono">{formatMoney(line.precio)}</span>
+            <span className="text-right font-mono font-bold">{formatMoney(line.subtotal)}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="mb-4">
+        <p className="flex justify-between"><span>Subtotal:</span> <span className="font-mono">{formatMoney(snapshot.subtotal)}</span></p>
+        {snapshot.ajusteRedondeo !== 0 && (
+          <p className="flex justify-between"><span>Redondeo:</span> <span className="font-mono">{formatMoney(snapshot.ajusteRedondeo)}</span></p>
+        )}
+        <p className="flex justify-between text-lg font-bold border-t pt-1 mt-1"><span>Total:</span> <span className="font-mono">{formatMoney(snapshot.cartTotal)}</span></p>
+      </div>
+    </div>
+  );
 }
 
 // ── Widget de Fecha y Hora en tiempo real ─────────────────────────────────────
@@ -104,11 +202,11 @@ export default function Venta() {
     },
   });
 
-  // Campo chico de Cantidad (defecto '1', marcado pendiente para el próximo escaneo)
+  // Campo chico de Cantidad (defecto '1')
   const [scanQty, setScanQty] = useState('1');
   const scanQtyInputRef = useRef<HTMLInputElement>(null);
 
-  // Modal para modo Eliminar Productos
+  // Modal para modo Eliminar Productos (modo corrección)
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   // Last product added — for preview in right panel
@@ -124,14 +222,15 @@ export default function Venta() {
   const { formatMoney } = useCurrency();
 
   const [cart, setCart] = useState<CartItem[]>([]);
-  // qtyDisplay holds the raw string being typed in each qty cell (allows comma mid-input)
-  const [qtyDisplay, setQtyDisplay] = useState<Map<number, string>>(new Map());
   const [showPayment, setShowPayment] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'efectivo' | 'tarjeta' | 'transferencia' | 'mixto'>('efectivo');
   const [cashTendered, setCashTendered] = useState('');
   const [buyerName, setBuyerName] = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
-  const [lastTicket, setLastTicket] = useState<number | null>(null);
+
+  // Snapshot de venta realizada para ticket e impresión independiente del carrito
+  const [saleSnapshot, setSaleSnapshot] = useState<SaleSnapshot | null>(null);
+
   const [stockWarning, setStockWarning] = useState<{ product: string; agotado: boolean; disponible?: number } | null>(null);
   
   // Para pagos mixtos
@@ -140,7 +239,6 @@ export default function Venta() {
   const [mixtoTransferencia, setMixtoTransferencia] = useState('');
 
   const rawCartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
-  // Obtener configuración de redondeo
   const redondeoActivo = config?.redondeo_activo ?? true;
   const { subtotal, ajusteRedondeo, total: cartTotal } = calcularRedondeo(
     rawCartTotal,
@@ -167,8 +265,10 @@ export default function Venta() {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts (deshabilitados cuando la papelera/modal de corrección está abierta)
   useEffect(() => {
+    if (showDeleteModal) return;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'F1') {
         e.preventDefault();
@@ -199,17 +299,15 @@ export default function Venta() {
       }
       if (e.key === 'Escape') {
         setNameDropdownOpen(false);
-        setShowDeleteModal(false);
         barcodeScanner.focus();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [cart, showPayment, showSuccess, barcodeScanner]);
+  }, [cart, showPayment, showSuccess, showDeleteModal, barcodeScanner]);
 
   // ── Core: add product to cart ──────────────────────────────────────────────
   const addToCart = (p: Producto) => {
-    // 1. Validar cantidad pendiente
     const normalizedQty = scanQty.trim().replace(',', '.');
     const qtyNum = parseFloat(normalizedQty);
     if (isNaN(qtyNum) || qtyNum <= 0) {
@@ -224,7 +322,6 @@ export default function Venta() {
     }
     const pendingQty = qtyNum;
 
-    // 2. Obtener stock actual de la lista cargada de productos (no copia desactualizada)
     const prodActual = todosProductos.find(item => item.id === p.id);
     const stockActual = prodActual != null ? ((prodActual as any).stock ?? 0) : ((p as any).stock ?? 0);
 
@@ -234,44 +331,35 @@ export default function Venta() {
       return;
     }
 
-    // Calcular cuánto quedaría en total antes de actualizar el estado
-    const existing = cart.find(item => item.id === p.id);
-    const currentQty = existing ? existing.cartQty : 0;
-    const newTotalQty = Math.round((currentQty + pendingQty) * 1000) / 1000;
+    const currentQtyForProduct = cart
+      .filter(item => item.id === p.id)
+      .reduce((sum, item) => sum + item.cartQty, 0);
+    const newTotalQty = Math.round((currentQtyForProduct + pendingQty) * 1000) / 1000;
 
-    // Si no entra en el stock, se muestra el modal y el carrito queda exactamente como estaba
     if (newTotalQty > stockActual) {
       setStockWarning({ product: p.nombre, agotado: false, disponible: stockActual });
       barcodeScanner.focus();
       return;
     }
 
-    // Solo si entra dentro del stock se actualiza el carrito
-    setCart(prev => {
-      const existingInPrev = prev.find(item => item.id === p.id);
-      if (existingInPrev) {
-        return prev.map(item =>
-          item.id === p.id
-            ? { ...item, cartQty: newTotalQty, stock: stockActual, subtotal: Math.round(newTotalQty * item.precio) }
-            : item
-        );
-      }
-      const roundedPending = Math.round(pendingQty * 1000) / 1000;
-      const newItem: CartItem = {
-        id: p.id,
-        nombre: p.nombre,
-        codigo: p.codigo,
-        precio: p.precio,
-        stock: stockActual,
-        cartQty: roundedPending,
-        subtotal: Math.round(roundedPending * p.precio),
-        imagen: p.imagen ?? null,
-      };
-      return [...prev, newItem];
-    });
+    const roundedPending = Math.round(pendingQty * 1000) / 1000;
+    const newCartItemId = `row-${Date.now()}-${Math.random().toString(36).substr(2, 7)}`;
+    const newItem: CartItem = {
+      cartItemId: newCartItemId,
+      id: p.id,
+      nombre: p.nombre,
+      codigo: p.codigo,
+      precio: p.precio,
+      stock: stockActual,
+      cartQty: roundedPending,
+      subtotal: Math.round(roundedPending * p.precio),
+      imagen: p.imagen ?? null,
+    };
 
-    // Update last added preview (solo foto y nombre)
+    setCart(prev => [...prev, newItem]);
+
     setLastAdded({
+      cartItemId: newCartItemId,
       id: p.id,
       nombre: p.nombre,
       codigo: p.codigo,
@@ -286,33 +374,27 @@ export default function Venta() {
       setLastScannedCode(p.codigo);
     }
 
-    // Initialize display string for the item
-    setQtyDisplay(prev => new Map(prev).set(p.id, String(newTotalQty)));
-
-    // Clear name search if open
     setNameSearch('');
     setNameDropdownOpen(false);
-
-    // Cantidad vuelve a 1 automáticamente
     setScanQty('1');
 
-    // Keep focus strictly on the barcode scanner field for consecutive scans
     setTimeout(() => {
       barcodeScanner.focus();
     }, 20);
   };
 
-  // ── Handle Barcode Scan from USB Laser Scanner or Manual Code Entry ─────────
+  // ── Handle Barcode Scan ───────────────────────────────────────────────────
   const handleBarcodeScan = async (code: string) => {
     const trimmed = cleanBarcode(code);
     if (!trimmed) return;
 
     setLastScannedCode(trimmed);
+    try {
+      localStorage.setItem('sgc_last_scan_time', String(Date.now()));
+    } catch (_) {}
 
-    // 1. Check in memory list first (fastest)
     let match = matchProductByBarcode(todosProductos, trimmed);
 
-    // 2. If not found in memory, query API backend directly
     if (!match) {
       try {
         const results = await getProductos({ q: trimmed, activo: 'true' } as any);
@@ -332,12 +414,11 @@ export default function Venta() {
         description: `No se encontró ningún producto con el código: ${trimmed}`,
         variant: 'destructive',
       });
-      // Always refocus barcode scanner so cashier can scan next item immediately!
       barcodeScanner.focus();
     }
   };
 
-  // ── Handle Name Search input & enter key ────────────────────────────────────
+  // ── Handle Name Search ─────────────────────────────────────────────────────
   const handleNameSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setNameSearch(e.target.value);
   };
@@ -360,89 +441,68 @@ export default function Venta() {
     }
   };
 
-  const removeItem = (id: number) => {
-    const next = cart.filter(item => item.id !== id);
-    setCart(prev => prev.filter(item => item.id !== id));
-    if (lastAdded?.id === id) setLastAdded(next.length > 0 ? next[next.length - 1] : null);
-    setQtyDisplay(prev => { const m = new Map(prev); m.delete(id); return m; });
-    barcodeScanner.focus();
+  // ── Modal / Corrección de filas específicas ─────────────────────────────────
+  const removeItemByCartItemId = (cartItemId: string) => {
+    const itemToRemove = cart.find(item => item.cartItemId === cartItemId);
+    const next = cart.filter(item => item.cartItemId !== cartItemId);
+    setCart(prev => prev.filter(item => item.cartItemId !== cartItemId));
+    if (itemToRemove && lastAdded?.cartItemId === itemToRemove.cartItemId) {
+      setLastAdded(next.length > 0 ? next[next.length - 1] : null);
+    }
   };
 
-  // Update quantity via +/- delta
-  const updateQty = (id: number, delta: number) => {
-    const item = cart.find(i => i.id === id);
-    if (!item) return;
+  const incrementRowQty = (cartItemId: string) => {
+    const targetItem = cart.find(i => i.cartItemId === cartItemId);
+    if (!targetItem) return;
 
-    const newQty = Math.round((item.cartQty + delta) * 1000) / 1000;
+    const prodActual = todosProductos.find(p => p.id === targetItem.id);
+    const stockActual = prodActual != null ? ((prodActual as any).stock ?? 0) : targetItem.stock;
 
-    // 1. Restar hasta llegar a cero debe eliminar la fila
-    if (newQty <= 0) {
-      removeItem(id);
+    const currentTotalQtyForProduct = cart
+      .filter(i => i.id === targetItem.id)
+      .reduce((sum, i) => sum + i.cartQty, 0);
+
+    if (currentTotalQtyForProduct + 1 > stockActual) {
+      setStockWarning({ product: targetItem.nombre, agotado: stockActual <= 0, disponible: stockActual });
       return;
     }
 
-    // 2. Validar stock actual contra la lista cargada de productos
-    const prodActual = todosProductos.find(p => p.id === id);
-    const stockActual = prodActual != null ? ((prodActual as any).stock ?? 0) : item.stock;
-
-    if (newQty > stockActual) {
-      setStockWarning({ product: item.nombre, agotado: stockActual <= 0, disponible: stockActual });
-      return;
-    }
-
-    // Actualizar carrito
-    setCart(prev => prev.map(i =>
-      i.id === id
-        ? { ...i, cartQty: newQty, stock: stockActual, subtotal: Math.round(newQty * i.precio) }
-        : i
-    ));
-    setQtyDisplay(prev => new Map(prev).set(id, String(newQty)));
+    setCart(prev => prev.map(i => {
+      if (i.cartItemId === cartItemId) {
+        const newQty = i.cartQty + 1;
+        return {
+          ...i,
+          cartQty: newQty,
+          subtotal: Math.round(newQty * i.precio),
+        };
+      }
+      return i;
+    }));
   };
 
-  // Update raw display string while typing in qty cell
-  const handleQtyChange = (id: number, val: string) => {
-    setQtyDisplay(prev => new Map(prev).set(id, val));
+  const decrementRowQty = (cartItemId: string) => {
+    const targetItem = cart.find(i => i.cartItemId === cartItemId);
+    if (!targetItem) return;
+
+    if (targetItem.cartQty <= 1) {
+      removeItemByCartItemId(cartItemId);
+      return;
+    }
+
+    setCart(prev => prev.map(i => {
+      if (i.cartItemId === cartItemId) {
+        const newQty = i.cartQty - 1;
+        return {
+          ...i,
+          cartQty: newQty,
+          subtotal: Math.round(newQty * i.precio),
+        };
+      }
+      return i;
+    }));
   };
 
-  // Commit typed qty value on blur or Enter
-  const commitQty = (id: number, val: string) => {
-    const item = cart.find(i => i.id === id);
-    if (!item) return;
-
-    const normalized = val.replace(',', '.').trim();
-    const newQty = parseFloat(normalized);
-
-    // Si no es un número válido
-    if (!Number.isFinite(newQty)) {
-      setQtyDisplay(prev => new Map(prev).set(id, String(item.cartQty)));
-      return;
-    }
-
-    // Si la cantidad es cero o menor, se elimina la fila
-    if (newQty <= 0) {
-      removeItem(id);
-      return;
-    }
-
-    // Validación de stock actual contra la lista de productos
-    const prodActual = todosProductos.find(p => p.id === id);
-    const stockActual = prodActual != null ? ((prodActual as any).stock ?? 0) : item.stock;
-
-    if (newQty > stockActual) {
-      setStockWarning({ product: item.nombre, agotado: stockActual <= 0, disponible: stockActual });
-      setQtyDisplay(prev => new Map(prev).set(id, String(item.cartQty)));
-      return;
-    }
-
-    const rounded = Math.round(newQty * 1000) / 1000;
-    setCart(prev => prev.map(i =>
-      i.id === id
-        ? { ...i, cartQty: rounded, stock: stockActual, subtotal: Math.round(rounded * i.precio) }
-        : i
-    ));
-    setQtyDisplay(prev => new Map(prev).set(id, String(rounded)));
-  };
-
+  // ── Procesar Cobro ──────────────────────────────────────────────────────────
   const handlePay = () => {
     if (!caja) {
       toast({ title: 'Caja cerrada', description: 'Debes abrir la caja antes de vender.', variant: 'destructive' });
@@ -453,7 +513,6 @@ export default function Venta() {
       return;
     }
     
-    // Validar pago mixto
     if (paymentMethod === 'mixto') {
       const efectivo = Number(mixtoEfectivo) || 0;
       const tarjeta = Number(mixtoTarjeta) || 0;
@@ -486,7 +545,6 @@ export default function Venta() {
       ventaData.nombre_comprador = buyerName.trim();
     }
     
-    // Agregar detalle_pago_mixto para pagos mixtos
     if (paymentMethod === 'mixto') {
       ventaData.detalle_pago_mixto = JSON.stringify({
         efectivo: Number(mixtoEfectivo) || 0,
@@ -499,7 +557,18 @@ export default function Venta() {
       { data: ventaData },
       {
         onSuccess: (data) => {
-          setLastTicket(data.numero_ticket);
+          // Generar copia (snapshot) congelada antes de vaciar el carrito
+          const snapshotData: SaleSnapshot = {
+            ticketNumber: data.numero_ticket,
+            items: cart.map(i => ({ ...i })),
+            subtotal,
+            ajusteRedondeo,
+            cartTotal,
+            buyerName: buyerName.trim(),
+            fecha: new Date().toLocaleString('es-ES'),
+          };
+          setSaleSnapshot(snapshotData);
+
           setShowPayment(false);
           setShowSuccess(true);
           setCart([]); setNameSearch(''); setCashTendered(''); setBuyerName(''); setLastAdded(null);
@@ -526,35 +595,15 @@ export default function Venta() {
         }
       `}</style>
 
-      {/* ── TICKET PARA IMPRESIÓN ───────────────────────────────────────────── */}
-      {showSuccess && config?.emite_tickets && (
-        <div className="ticket-print p-6 text-sm" style={{ display: 'none' }}>
-          <div className="text-center mb-4">
-            <h1 className="text-xl font-bold">{config?.nombre_empresa || 'Empresa'}</h1>
-            <p className="text-muted-foreground">{config?.direccion || ''}</p>
-            <p className="text-muted-foreground">{config?.telefono || ''}</p>
-          </div>
-          <div className="border-t border-b py-2 mb-4">
-            <p><strong>Ticket #:</strong> {lastTicket}</p>
-            <p><strong>Fecha:</strong> {new Date().toLocaleString('es-ES')}</p>
-            {buyerName.trim() && <p><strong>Comprador:</strong> {buyerName.trim()}</p>}
-          </div>
-          <div className="mb-4">
-            <p><strong>Subtotal:</strong> {formatMoney(subtotal)}</p>
-            {ajusteRedondeo !== 0 && (
-              <p><strong>Redondeo:</strong> {formatMoney(ajusteRedondeo)}</p>
-            )}
-            <p className="text-lg font-bold"><strong>Total:</strong> {formatMoney(cartTotal)}</p>
-          </div>
-        </div>
-      )}
+      {/* ── TICKET PARA IMPRESIÓN (Basado en saleSnapshot) ────────────────────── */}
+      <TicketPrint snapshot={saleSnapshot} config={config} formatMoney={formatMoney} />
 
       {/* ── SUCCESS OVERLAY ─────────────────────────────────────────────── */}
       {showSuccess && (
         <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur flex flex-col items-center justify-center">
           <CheckCircle2 className="w-24 h-24 text-emerald-500 mb-4" />
           <h2 className="text-3xl font-bold mb-1">Venta Completada</h2>
-          <p className="text-lg text-muted-foreground">Ticket #{lastTicket}</p>
+          <p className="text-lg text-muted-foreground">Ticket #{saleSnapshot?.ticketNumber}</p>
           {config?.emite_tickets && (
             <Button 
               onClick={() => window.print()}
@@ -692,7 +741,7 @@ export default function Venta() {
             </Button>
           </div>
 
-          {/* Atajos de teclado + Recuadro Fecha y Hora (arriba a la derecha) */}
+          {/* Atajos de teclado + Recuadro Fecha y Hora */}
           <div className="flex items-center gap-3 shrink-0">
             <div className="flex items-center gap-1 shrink-0">
               <kbd className="font-mono bg-muted px-1.5 py-0.5 rounded border border-border text-[10px] text-muted-foreground" title="Vaciar carrito (F1)">
@@ -712,7 +761,7 @@ export default function Venta() {
               </kbd>
             </div>
 
-            {/* Recuadro de Fecha y Hora (arriba a la derecha) */}
+            {/* Recuadro de Fecha y Hora */}
             <DateTimeWidget />
           </div>
         </div>
@@ -721,7 +770,7 @@ export default function Venta() {
       {/* ── MAIN AREA: Cart table + Right panel ─────────────────────────── */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
 
-        {/* ── CENTER: Cart table (sin ícono de basura durante uso normal) ── */}
+        {/* ── CENTER: Cart table ── */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           {/* Table header */}
           <div className="shrink-0 grid grid-cols-[2.5rem_2.5rem_7rem_1fr_8rem_7rem_7rem] gap-0 border-b border-border bg-muted/40 text-muted-foreground text-xs uppercase tracking-wide">
@@ -734,7 +783,7 @@ export default function Venta() {
             <div className="px-2 py-2 text-right">Subtotal</div>
           </div>
 
-          {/* Table body — scrollable */}
+          {/* Table body */}
           <div className="flex-1 overflow-y-auto">
             {cart.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-30 select-none">
@@ -745,13 +794,10 @@ export default function Venta() {
             ) : (
               cart.map((item, idx) => (
                 <div
-                  key={item.id}
+                  key={item.cartItemId}
                   className="grid grid-cols-[2.5rem_2.5rem_7rem_1fr_8rem_7rem_7rem] gap-0 border-b border-border/50 hover:bg-muted/20 items-center"
                 >
-                  {/* N° */}
                   <div className="px-2 py-2 text-center text-xs text-muted-foreground font-mono">{idx + 1}</div>
-
-                  {/* Foto */}
                   <div className="px-1 py-1.5 flex justify-center">
                     {item.imagen ? (
                       <img src={item.imagen} alt={item.nombre} className="w-8 h-8 object-cover rounded border border-border" />
@@ -761,58 +807,12 @@ export default function Venta() {
                       </div>
                     )}
                   </div>
-
-                  {/* Código */}
                   <div className="px-2 py-2 font-mono text-xs text-muted-foreground truncate">{item.codigo || '—'}</div>
-
-                  {/* Nombre */}
                   <div className="px-2 py-2 font-medium text-sm truncate">{item.nombre}</div>
-
-                  {/* Cantidad con controles [-] [input] [+] */}
-                  <div className="px-2 py-1.5 flex items-center justify-center">
-                    <div className="flex items-center bg-background border border-border rounded overflow-hidden shadow-sm">
-                      <button
-                        type="button"
-                        onClick={() => updateQty(item.id, -1)}
-                        className="px-2 py-1.5 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                        title="Restar 1 (al llegar a 0 se elimina)"
-                      >
-                        <Minus className="w-3 h-3" />
-                      </button>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={qtyDisplay.get(item.id) ?? String(item.cartQty)}
-                        onChange={e => {
-                          const val = e.target.value;
-                          if (/[^0-9.,]/.test(val)) return;
-                          handleQtyChange(item.id, val);
-                        }}
-                        onBlur={e => commitQty(item.id, e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            commitQty(item.id, (e.target as HTMLInputElement).value);
-                            barcodeScanner.focus();
-                          }
-                        }}
-                        className="w-14 text-center font-bold text-sm bg-transparent border-x border-border py-1 focus:outline-none focus:bg-muted/30"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => updateQty(item.id, 1)}
-                        className="px-2 py-1.5 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                        title="Sumar 1"
-                      >
-                        <Plus className="w-3 h-3" />
-                      </button>
-                    </div>
+                  <div className="px-2 py-2 text-center font-bold text-sm font-mono text-foreground">
+                    {item.cartQty}
                   </div>
-
-                  {/* Precio unitario */}
                   <div className="px-2 py-2 text-right font-mono text-sm">{formatMoney(item.precio)}</div>
-
-                  {/* Subtotal */}
                   <div className="px-2 py-2 text-right font-bold text-sm text-primary font-mono">{formatMoney(item.subtotal)}</div>
                 </div>
               ))
@@ -823,34 +823,19 @@ export default function Venta() {
         {/* ── RIGHT PANEL ─────────────────────────────────────────────── */}
         <div className="w-80 shrink-0 flex flex-col border-l border-border bg-card">
 
-          {/* ── SECCIÓN: "Escanear Código" + "Cantidad" justo al lado ── */}
-          <div className="p-3 border-b border-border bg-muted/10 space-y-2">
+          {/* ── SECCIÓN: "CANTIDAD" (Izquierda) + "CÓDIGO / LECTOR" (Derecha) ── */}
+          <div className="p-3 border-b border-border bg-muted/10 space-y-2 shrink-0">
             <div className="flex items-center justify-between">
               <Label className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5 text-primary">
-                <Barcode className="w-4 h-4" /> Escanear Código
+                <Barcode className="w-4 h-4" /> Terminal POS
               </Label>
               <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1 bg-emerald-500/10 px-1.5 py-0.5 rounded">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                Listo (F2)
+                Lector Listo (F2)
               </span>
             </div>
 
-            {/* Fila: Campo Escanear Código + Campo chico de Cantidad */}
             <div className="flex items-center gap-2">
-              <div className="relative flex-1 min-w-0">
-                <Input
-                  ref={barcodeScanner.inputRef}
-                  value={barcodeScanner.barcode}
-                  onChange={barcodeScanner.handleChange}
-                  onKeyDown={barcodeScanner.handleKeyDown}
-                  placeholder="Código de barras..."
-                  className="h-10 text-sm font-mono font-bold bg-background border-primary/50 focus:border-primary focus:ring-2 focus:ring-primary/20 pr-8"
-                  autoComplete="off"
-                />
-                <ScanBarcode className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
-              </div>
-
-              {/* Campo chico de Cantidad (F4 para acceder y seleccionar todo) */}
               <div className="w-20 shrink-0 relative">
                 <Input
                   ref={scanQtyInputRef}
@@ -882,10 +867,23 @@ export default function Venta() {
                   F4
                 </span>
               </div>
+
+              <div className="relative flex-1 min-w-0">
+                <Input
+                  ref={barcodeScanner.inputRef}
+                  value={barcodeScanner.barcode}
+                  onChange={barcodeScanner.handleChange}
+                  onKeyDown={barcodeScanner.handleKeyDown}
+                  placeholder="Escanear o escribir código..."
+                  className="h-10 text-sm font-mono font-bold bg-background border-primary/50 focus:border-primary focus:ring-2 focus:ring-primary/20 pr-8"
+                  autoComplete="off"
+                />
+                <ScanBarcode className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+              </div>
             </div>
 
             <p className="text-[10px] text-muted-foreground leading-tight flex items-center justify-between">
-              <span>Lector USB o Enter para escanear.</span>
+              <span>Lector agrega automático. Manual: Enter.</span>
               {parseFloat(scanQty.replace(',', '.')) > 1 && (
                 <span className="text-primary font-semibold">
                   Cantidad: {scanQty}
@@ -894,16 +892,15 @@ export default function Venta() {
             </p>
           </div>
 
-          {/* ── PANEL: Rediseño "Último producto cargado" (Foto grande arriba, solo nombre abajo) ── */}
-          <div className="flex-1 flex flex-col p-3 border-b border-border min-h-0 overflow-y-auto">
-            <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-2 text-center">
+          {/* ── PANEL: "Último producto cargado" ── */}
+          <div className="flex-1 flex flex-col p-3 border-b border-border min-h-0 overflow-hidden items-center justify-center">
+            <span className="text-[10px] uppercase font-bold tracking-wider text-muted-foreground mb-1 text-center shrink-0">
               Último producto cargado
             </span>
 
             {lastAdded ? (
-              <div className="flex-1 flex flex-col items-center justify-center">
-                {/* Foto ocupando bien el ancho del panel */}
-                <div className="w-full aspect-square max-h-56 rounded-lg border border-border bg-muted/20 flex items-center justify-center overflow-hidden shadow-sm p-2">
+              <div className="flex-1 flex flex-col items-center justify-center min-h-0 w-full">
+                <div className="w-full max-h-40 flex-1 rounded-lg border border-border bg-muted/20 flex items-center justify-center overflow-hidden shadow-sm p-2">
                   {lastAdded.imagen ? (
                     <img
                       src={lastAdded.imagen}
@@ -912,32 +909,30 @@ export default function Venta() {
                     />
                   ) : (
                     <div className="flex flex-col items-center justify-center text-muted-foreground/40">
-                      <Package className="w-16 h-16 mb-2" />
+                      <Package className="w-12 h-12 mb-1" />
                       <span className="text-xs">Sin imagen</span>
                     </div>
                   )}
                 </div>
 
-                {/* Debajo de la foto: SOLO el nombre del producto (sin código ni precio) */}
-                <div className="mt-3 text-center w-full px-1">
-                  <h4 className="text-base font-bold text-foreground leading-snug line-clamp-3">
+                <div className="mt-2 text-center w-full px-1 shrink-0">
+                  <h4 className="text-sm font-bold text-foreground leading-snug line-clamp-2">
                     {lastAdded.nombre}
                   </h4>
                 </div>
               </div>
             ) : (
-              <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground/30 select-none py-6">
-                <div className="w-full aspect-square max-h-56 rounded-lg border-2 border-dashed border-border flex flex-col items-center justify-center p-4">
-                  <Package className="w-14 h-14 mb-2 text-muted-foreground/30" />
+              <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground/30 select-none py-2 w-full">
+                <div className="w-full max-h-40 flex-1 rounded-lg border-2 border-dashed border-border flex flex-col items-center justify-center p-3">
+                  <Package className="w-12 h-12 mb-1 text-muted-foreground/30" />
                   <p className="text-xs text-center font-medium">Esperando primer escaneo...</p>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Total + Cobrar — always at bottom */}
+          {/* Total + Cobrar */}
           <div className="shrink-0 p-3 bg-muted/10">
-            {/* Código del último producto escaneado mostrado cerca del total */}
             <div className="flex items-center justify-between text-xs text-muted-foreground font-mono mb-2 pb-1.5 border-b border-border/50">
               <span className="text-[10px] uppercase tracking-wider font-semibold">Último código:</span>
               <span className="font-bold text-foreground bg-muted px-2 py-0.5 rounded border border-border/50 truncate max-w-[170px]">
@@ -970,7 +965,7 @@ export default function Venta() {
         </div>
       </div>
 
-      {/* ── MODAL: Modo Eliminar Productos ───────────────────────────────── */}
+      {/* ── MODAL: Modo Corrección en "Eliminar Productos" ──────────────── */}
       <Dialog
         open={showDeleteModal}
         onOpenChange={(open) => {
@@ -988,15 +983,15 @@ export default function Venta() {
                 <Trash2 className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-foreground">Eliminar Productos</h3>
+                <h3 className="text-base font-bold text-foreground">Modo Corrección / Eliminar Productos</h3>
                 <p className="text-xs text-muted-foreground">
-                  Haga clic en el ícono de basura del producto que desee eliminar del carrito.
+                  Al pasar el cursor sobre la cantidad podrá usar [-] y [+] solo en cantidades enteras.
                 </p>
               </div>
             </div>
           </div>
 
-          {/* Table with trash icons visible */}
+          {/* Table with row-level correction */}
           <div className="flex-1 overflow-y-auto min-h-0">
             {cart.length === 0 ? (
               <div className="py-12 flex flex-col items-center justify-center text-muted-foreground opacity-60">
@@ -1005,52 +1000,83 @@ export default function Venta() {
               </div>
             ) : (
               <div>
-                <div className="shrink-0 grid grid-cols-[2.5rem_2.5rem_6.5rem_1fr_5rem_6rem_6rem_3.5rem] gap-0 border-b border-border bg-muted/40 text-muted-foreground text-xs uppercase tracking-wide sticky top-0 z-10 backdrop-blur">
+                <div className="shrink-0 grid grid-cols-[2.5rem_2.5rem_6.5rem_1fr_7rem_6rem_6rem_3.5rem] gap-0 border-b border-border bg-muted/40 text-muted-foreground text-xs uppercase tracking-wide sticky top-0 z-10 backdrop-blur">
                   <div className="px-2 py-2 text-center">N°</div>
                   <div className="px-1 py-2 text-center">Foto</div>
                   <div className="px-2 py-2">Código</div>
                   <div className="px-2 py-2">Nombre</div>
-                  <div className="px-2 py-2 text-center">Cant.</div>
+                  <div className="px-2 py-2 text-center">Cantidad</div>
                   <div className="px-2 py-2 text-right">P. Unit.</div>
                   <div className="px-2 py-2 text-right">Subtotal</div>
                   <div className="px-2 py-2 text-center text-destructive font-bold">Quitar</div>
                 </div>
 
-                {cart.map((item, idx) => (
-                  <div
-                    key={item.id}
-                    className="grid grid-cols-[2.5rem_2.5rem_6.5rem_1fr_5rem_6rem_6rem_3.5rem] gap-0 border-b border-border/50 hover:bg-muted/30 items-center transition-colors"
-                  >
-                    <div className="px-2 py-2.5 text-center text-xs text-muted-foreground font-mono">{idx + 1}</div>
-                    <div className="px-1 py-2 flex justify-center">
-                      {item.imagen ? (
-                        <img src={item.imagen} alt={item.nombre} className="w-8 h-8 object-cover rounded border border-border" />
-                      ) : (
-                        <div className="w-8 h-8 rounded border border-dashed border-border bg-muted/30 flex items-center justify-center">
-                          <Package className="w-3.5 h-3.5 text-muted-foreground/40" />
-                        </div>
-                      )}
+                {cart.map((item, idx) => {
+                  const isIntegerQty = Number.isInteger(item.cartQty);
+
+                  return (
+                    <div
+                      key={item.cartItemId}
+                      className="grid grid-cols-[2.5rem_2.5rem_6.5rem_1fr_7rem_6rem_6rem_3.5rem] gap-0 border-b border-border/50 hover:bg-muted/30 items-center transition-colors group"
+                    >
+                      <div className="px-2 py-2.5 text-center text-xs text-muted-foreground font-mono">{idx + 1}</div>
+                      <div className="px-1 py-2 flex justify-center">
+                        {item.imagen ? (
+                          <img src={item.imagen} alt={item.nombre} className="w-8 h-8 object-cover rounded border border-border" />
+                        ) : (
+                          <div className="w-8 h-8 rounded border border-dashed border-border bg-muted/30 flex items-center justify-center">
+                            <Package className="w-3.5 h-3.5 text-muted-foreground/40" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="px-2 py-2 font-mono text-xs text-muted-foreground truncate">{item.codigo || '—'}</div>
+                      <div className="px-2 py-2 font-medium text-sm truncate">{item.nombre}</div>
+
+                      {/* Cantidad con [-] y [+] visibles SOLO al pasar el mouse (y SOLO si es entera) */}
+                      <div className="px-2 py-2 text-center flex items-center justify-center gap-1 font-mono">
+                        {isIntegerQty ? (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              onClick={() => decrementRowQty(item.cartItemId)}
+                              className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity p-0 border-destructive/40 text-destructive hover:bg-destructive/10"
+                              title="Disminuir cantidad en 1"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </Button>
+                            <span className="font-bold text-sm min-w-[1.5rem]">{item.cartQty}</span>
+                            <Button
+                              variant="outline"
+                              size="icon"
+                              onClick={() => incrementRowQty(item.cartItemId)}
+                              className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity p-0 border-primary/40 text-primary hover:bg-primary/10"
+                              title="Aumentar cantidad en 1"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </Button>
+                          </>
+                        ) : (
+                          <span className="font-bold text-sm">{item.cartQty}</span>
+                        )}
+                      </div>
+
+                      <div className="px-2 py-2 text-right font-mono text-sm">{formatMoney(item.precio)}</div>
+                      <div className="px-2 py-2 text-right font-bold text-sm text-primary font-mono">{formatMoney(item.subtotal)}</div>
+                      <div className="px-2 py-2 flex justify-center">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => removeItemByCartItemId(item.cartItemId)}
+                          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/15 rounded-full transition-colors"
+                          title="Eliminar esta fila del carrito"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </div>
-                    <div className="px-2 py-2 font-mono text-xs text-muted-foreground truncate">{item.codigo || '—'}</div>
-                    <div className="px-2 py-2 font-medium text-sm truncate">{item.nombre}</div>
-                    <div className="px-2 py-2 text-center font-bold text-sm">
-                      {item.cartQty}
-                    </div>
-                    <div className="px-2 py-2 text-right font-mono text-sm">{formatMoney(item.precio)}</div>
-                    <div className="px-2 py-2 text-right font-bold text-sm text-primary font-mono">{formatMoney(item.subtotal)}</div>
-                    <div className="px-2 py-2 flex justify-center">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => removeItem(item.id)}
-                        className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/15 rounded-full transition-colors"
-                        title="Eliminar este ítem"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1106,7 +1132,6 @@ export default function Venta() {
                 />
               </div>
             )}
-            {/* Payment method grid */}
             <div>
               <p className="text-sm font-bold mb-2 text-center">Medio de Pago</p>
               <div className="grid grid-cols-4 gap-2">
@@ -1134,7 +1159,6 @@ export default function Venta() {
               </div>
             </div>
 
-            {/* Cash section */}
             <div className="min-h-[120px]">
               {paymentMethod === 'efectivo' && (
                 <div className="bg-muted/30 rounded-lg border border-border p-3 space-y-2">
@@ -1148,7 +1172,6 @@ export default function Venta() {
                       autoFocus
                     />
                   </div>
-                  {/* Vuelto */}
                   <div className={`flex justify-between items-center rounded px-3 py-1.5 border transition-all ${
                     cashTendered && Number(cashTendered) >= cartTotal
                       ? 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'

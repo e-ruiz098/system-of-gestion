@@ -36,10 +36,13 @@ npm-debug.log
 yarn-error.log
 testem.log
 /typings
+cookies.txt
 
 # System Files
 .DS_Store
 Thumbs.db
+*.db-shm
+*.db-wal
 
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
