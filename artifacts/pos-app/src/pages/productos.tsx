@@ -1,17 +1,18 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   useGetProductos, useUpdateProducto, useCreateProducto, useDeleteProducto,
   useUploadImage, useGetCategorias, useGetCierresCaja,
 } from '@workspace/api-client-react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, useQuery, useMutation } from '@tanstack/react-query';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import {
   Search, Plus, Edit, Trash2, Loader2, History, Package,
   ChevronDown, ChevronRight, Download, Image as ImageIcon, Upload, X, Tag, Barcode,
+  PlusCircle, AlertTriangle, ArrowRight,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { Label } from '@/components/ui/label';
@@ -32,6 +33,324 @@ function StockBadge({ estado, stock }: { estado?: string; stock: number }) {
   if (estado === 'rojo')     return <span className="inline-flex px-2 py-0.5 rounded text-xs font-bold bg-destructive/10 text-destructive">{label}</span>;
   if (estado === 'amarillo') return <span className="inline-flex px-2 py-0.5 rounded text-xs font-bold bg-amber-500/10 text-amber-500">{label}</span>;
   return <span className="text-sm font-mono text-foreground">{label}</span>;
+}
+
+// ── Modal Agregar Stock Acumulativo ───────────────────────────────────────────
+function AgregarStockModal({
+  product,
+  open,
+  onClose,
+}: {
+  product: any | null;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const [rows, setRows] = useState<string[]>(['']);
+  const [showConfirmClose, setShowConfirmClose] = useState(false);
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  // Fetch product movement history
+  const { data: historial, isLoading: loadingHistorial } = useQuery<any[]>({
+    queryKey: ['/api/productos', product?.id, 'stock-historial'],
+    queryFn: async () => {
+      if (!product?.id) return [];
+      const res = await fetch(`/api/productos/${product.id}/stock-historial`, {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) throw new Error('Error al obtener historial');
+      return res.json();
+    },
+    enabled: !!product?.id && open,
+  });
+
+  // Reset rows when opening
+  useEffect(() => {
+    if (open) {
+      setRows(['']);
+      setShowConfirmClose(false);
+      setTimeout(() => inputRefs.current[0]?.focus(), 100);
+    }
+  }, [open, product?.id]);
+
+  // Check if user has entered non-empty values
+  const hasFilledRows = useMemo(() => {
+    return rows.some(r => r.trim().length > 0);
+  }, [rows]);
+
+  const handleRequestClose = () => {
+    if (hasFilledRows) {
+      setShowConfirmClose(true);
+    } else {
+      onClose();
+    }
+  };
+
+  const handleRowChange = (index: number, val: string) => {
+    // Replace comma with dot for validation display
+    const next = [...rows];
+    next[index] = val;
+    setRows(next);
+  };
+
+  const addRow = () => {
+    setRows(prev => [...prev, '']);
+    setTimeout(() => {
+      const idx = rows.length;
+      inputRefs.current[idx]?.focus();
+    }, 50);
+  };
+
+  const deleteRow = (index: number) => {
+    if (rows.length === 1) {
+      setRows(['']);
+    } else {
+      setRows(prev => prev.filter((_, i) => i !== index));
+    }
+  };
+
+  // Live calculations
+  const parsedQuantities = useMemo(() => {
+    const list: number[] = [];
+    for (const r of rows) {
+      if (!r || r.trim() === '') continue;
+      const normalized = r.trim().replace(',', '.');
+      const val = parseFloat(normalized);
+      if (Number.isFinite(val) && val > 0) {
+        list.push(Math.round(val * 1000) / 1000);
+      }
+    }
+    return list;
+  }, [rows]);
+
+  const totalIngresado = useMemo(() => {
+    const sum = parsedQuantities.reduce((acc, q) => acc + q, 0);
+    return Math.round(sum * 1000) / 1000;
+  }, [parsedQuantities]);
+
+  const currentStock = product?.stock ?? 0;
+  const nuevoStock = Math.round((currentStock + totalIngresado) * 1000) / 1000;
+
+  // Mutation to submit stock
+  const stockIngresoMutation = useMutation({
+    mutationFn: async (quantities: number[]) => {
+      const res = await fetch(`/api/productos/${product.id}/stock-ingreso`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ renglones: quantities }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Error al agregar stock');
+      }
+      return data;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: 'Stock actualizado con éxito',
+        description: `Se agregaron +${data.total_ingresado}. Nuevo stock: ${data.stock_resultante}`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
+      onClose();
+    },
+    onError: (err: any) => {
+      toast({
+        title: 'Error al agregar stock',
+        description: err?.message || 'Revisa las cantidades e intenta nuevamente.',
+        variant: 'destructive',
+      });
+    },
+  });
+
+  const handleSave = () => {
+    if (parsedQuantities.length === 0) {
+      toast({
+        title: 'Ingreso vacío',
+        description: 'Ingrese al menos una cantidad mayor a cero.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    stockIngresoMutation.mutate(parsedQuantities);
+  };
+
+  if (!product) return null;
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={(o) => { if (!o) handleRequestClose(); }}>
+        <DialogContent className="sm:max-w-md max-h-[85vh] flex flex-col p-0 overflow-hidden">
+
+          {/* Header */}
+          <div className="px-6 py-4 border-b border-border bg-muted/20 flex items-center gap-3">
+            {product.imagen ? (
+              <img src={product.imagen} alt={product.nombre} className="w-10 h-10 object-cover rounded border border-border shrink-0" />
+            ) : (
+              <div className="w-10 h-10 rounded border border-dashed border-border bg-muted/30 flex items-center justify-center shrink-0 text-muted-foreground">
+                <Package className="w-5 h-5" />
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <h3 className="text-base font-bold truncate">Agregar Stock — {product.nombre}</h3>
+              <p className="text-xs text-muted-foreground font-mono">
+                Stock actual: <strong className="text-foreground">{currentStock}</strong>
+              </p>
+            </div>
+          </div>
+
+          {/* Body */}
+          <div className="flex-1 overflow-y-auto p-6 space-y-4">
+
+            {/* Lista de renglones */}
+            <div className="space-y-2">
+              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Renglones de ingreso (cada valor suma al stock)
+              </Label>
+
+              <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                {rows.map((rowVal, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold font-mono text-muted-foreground text-sm">
+                        +
+                      </span>
+                      <Input
+                        ref={el => { inputRefs.current[idx] = el; }}
+                        value={rowVal}
+                        onChange={e => handleRowChange(idx, e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            if (idx === rows.length - 1) {
+                              addRow();
+                            } else {
+                              inputRefs.current[idx + 1]?.focus();
+                            }
+                          }
+                        }}
+                        placeholder="Ej. 12,4"
+                        className="pl-7 font-mono font-bold text-sm h-10 bg-background"
+                        autoComplete="off"
+                      />
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => deleteRow(idx)}
+                      className="h-10 w-10 text-muted-foreground hover:text-destructive hover:bg-destructive/10 shrink-0"
+                      title="Borrar renglón"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={addRow}
+                className="w-full text-xs gap-1.5 border-dashed h-9 mt-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Agregar otra cantidad
+              </Button>
+            </div>
+
+            {/* Total acumulado + Nuevo Stock en vivo */}
+            <div className="p-3.5 rounded-lg border border-primary/20 bg-primary/5 space-y-2">
+              <div className="flex justify-between items-center text-xs">
+                <span className="text-muted-foreground">Total ingresado:</span>
+                <span className="font-mono font-bold text-sm text-primary">+{totalIngresado}</span>
+              </div>
+              <div className="flex justify-between items-center border-t border-primary/10 pt-2 text-sm font-bold">
+                <span>NUEVO STOCK:</span>
+                <span className="font-mono text-lg text-primary">{nuevoStock}</span>
+              </div>
+            </div>
+
+            {/* Historial de Ingresos de este producto */}
+            <div className="border-t border-border pt-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2 flex items-center gap-1.5">
+                <History className="w-3.5 h-3.5" /> Historial de ingresos
+              </h4>
+
+              {loadingHistorial ? (
+                <div className="py-4 text-center text-xs text-muted-foreground">Cargando historial...</div>
+              ) : !historial || historial.length === 0 ? (
+                <p className="text-xs text-muted-foreground italic py-2">Sin ingresos acumulativos registrados aún.</p>
+              ) : (
+                <div className="space-y-1.5 max-h-36 overflow-y-auto text-xs font-mono pr-1">
+                  {historial.map((h: any) => {
+                    const fechaStr = new Date(h.fecha).toLocaleString('es-AR', {
+                      day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+                    });
+                    const formattedRenglones = h.renglones_parsed?.map((q: number) => `+${q}`).join(' ') || '';
+
+                    return (
+                      <div key={h.id} className="p-2 rounded bg-muted/40 border border-border/50 space-y-0.5">
+                        <div className="flex justify-between text-[11px] text-muted-foreground">
+                          <span>{fechaStr}</span>
+                          <span className="font-bold text-foreground">{h.usuario_nombre || 'Usuario'}</span>
+                        </div>
+                        <div className="text-foreground leading-snug">
+                          anterior {h.stock_anterior} — <span className="text-primary font-bold">{formattedRenglones}</span> — total <strong className="text-primary">+{h.total_ingresado}</strong> — resultante <strong>{h.stock_resultante}</strong>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-3 border-t border-border bg-muted/20 flex justify-between items-center gap-3">
+            <Button variant="ghost" onClick={handleRequestClose} disabled={stockIngresoMutation.isPending}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleSave}
+              disabled={stockIngresoMutation.isPending || parsedQuantities.length === 0}
+              className="gap-2 px-6"
+            >
+              {stockIngresoMutation.isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+              Listo
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirmation Dialog on Unsaved Changes */}
+      <Dialog open={showConfirmClose} onOpenChange={setShowConfirmClose}>
+        <DialogContent className="max-w-sm">
+          <div className="flex flex-col items-center text-center py-2">
+            <AlertTriangle className="w-12 h-12 text-amber-500 mb-3" />
+            <h3 className="text-base font-bold mb-1">¿Descartar ingresos de stock?</h3>
+            <p className="text-xs text-muted-foreground mb-4">
+              Tiene cantidades cargadas sin guardar. Si sale ahora se perderán todos los valores ingresados.
+            </p>
+            <div className="flex gap-2 w-full">
+              <Button variant="outline" onClick={() => setShowConfirmClose(false)} className="flex-1">
+                Continuar cargando
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  setShowConfirmClose(false);
+                  onClose();
+                }}
+                className="flex-1"
+              >
+                Descartar
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
 }
 
 // ── HistorialTab ───────────────────────────────────────────────────────────────
@@ -137,7 +456,6 @@ export default function Productos() {
   const { user }   = useAuth();
   const isAdmin    = user?.rol === 'admin';
   const { formatMoney } = useCurrency();
-  const { data: config } = useGetConfig();
 
   // ── Categories ──────────────────────────────────────────────────────────────
   const { data: categoriasRaw } = useGetCategorias({ query: { queryKey: ['/api/categorias'] } } as any);
@@ -153,7 +471,7 @@ export default function Productos() {
     return m;
   }, [categorias]);
 
-  // Filter state — null = show all
+  // Filter state
   const [selectedMainId, setSelectedMainId] = useState<number | null>(null);
   const [selectedSubId,  setSelectedSubId]  = useState<number | null>(null);
 
@@ -164,13 +482,12 @@ export default function Productos() {
 
   const handleSelectMain = (id: number | null) => {
     setSelectedMainId(id);
-    setSelectedSubId(null);   // reset sub when changing main
+    setSelectedSubId(null);
   };
 
   // ── Search ──────────────────────────────────────────────────────────────────
   const [search, setSearch] = useState('');
 
-  // Build query params: categoria_id = main (exact), subcategoria_id = sub (optional)
   const queryParams = useMemo(() => {
     const p: Record<string, any> = {};
     if (search)           p.q               = search;
@@ -191,13 +508,15 @@ export default function Productos() {
   const [codigoError,      setCodigoError]     = useState<string | null>(null);
   const [imagePreview,     setImagePreview]    = useState<string | null>(null);
   const [isUploadingImage, setIsUploadingImage]= useState(false);
-  // Separate categoria/subcategoria state for the form
+
+  // Modal para "+ Agregar stock" acumulativo
+  const [stockProductModal, setStockProductModal] = useState<any | null>(null);
+
   const [formMainCatId,    setFormMainCatId]   = useState<string>('');
   const [formSubCatId,     setFormSubCatId]    = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const nombreInputRef = useRef<HTMLInputElement>(null);
 
-  // Reusable barcode scanner hook
   const barcodeScanner = useBarcodeScanner({
     autoFocus: isAddMode,
     onEnterNext: () => {
@@ -217,7 +536,6 @@ export default function Productos() {
   const uploadMutation = useUploadImage();
   const { toast } = useToast();
 
-  // ── Open form helpers ───────────────────────────────────────────────────────
   const openAdd = () => {
     setEditItem(null); setIsAddMode(true);
     barcodeScanner.reset();
@@ -231,7 +549,6 @@ export default function Productos() {
     barcodeScanner.setBarcode(p.codigo || '');
     setCodigoError(null);
     setImagePreview(p.imagen || null);
-    // categoria_id is always a main category; subcategoria_id is the sub
     setFormMainCatId(p.categoria_id    ? String(p.categoria_id)    : '');
     setFormSubCatId (p.subcategoria_id ? String(p.subcategoria_id) : '');
   };
@@ -244,7 +561,6 @@ export default function Productos() {
     setCodigoError(null);
   };
 
-  // ── Image handler ───────────────────────────────────────────────────────────
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -259,7 +575,6 @@ export default function Productos() {
     reader.readAsDataURL(file);
   };
 
-  // ── Save handler ────────────────────────────────────────────────────────────
   const handleSave = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
@@ -284,7 +599,6 @@ export default function Productos() {
       imagenFinal = imagePreview;
     }
 
-    // Preserve exact barcode string (never convert to number; retains leading zeros)
     const trimmedCodigo = cleanBarcode(barcodeScanner.barcode);
     const codigoFinal = trimmedCodigo.length > 0 ? trimmedCodigo : undefined;
 
@@ -293,16 +607,14 @@ export default function Productos() {
       nombre:          (fd.get('nombre') as string)?.trim(),
       precio:          Number((fd.get('precio') as string)?.replace(',', '.')),
       costo:           (fd.get('costo') as string) ? Number((fd.get('costo') as string)?.replace(',', '.')) : undefined,
-      stock:           Number((fd.get('stock') as string)?.replace(',', '.')),
       stock_minimo:    (fd.get('stock_minimo') as string) ? Number((fd.get('stock_minimo') as string)?.replace(',', '.')) : undefined,
-      // categoria_id  → always the main category
       categoria_id:    Number(formMainCatId),
-      // subcategoria_id → the sub, or null if not chosen
       subcategoria_id: formSubCatId ? Number(formSubCatId) : null,
       imagen:          imagenFinal,
     };
 
     if (isAddMode) {
+      data.stock = Number((fd.get('stock') as string)?.replace(',', '.'));
       createMutation.mutate({ data }, {
         onSuccess: () => {
           queryClient.invalidateQueries({ queryKey: ['/api/productos'] });
@@ -361,7 +673,6 @@ export default function Productos() {
     });
   };
 
-  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="flex h-full bg-background overflow-hidden">
 
@@ -373,7 +684,6 @@ export default function Productos() {
           </p>
         </div>
         <nav className="flex-1 overflow-y-auto py-1">
-          {/* All */}
           <button
             onClick={() => handleSelectMain(null)}
             className={`w-full text-left px-4 py-2 text-sm transition-colors border-l-2 ${
@@ -385,7 +695,6 @@ export default function Productos() {
             Todos los productos
           </button>
 
-          {/* 15 main categories */}
           {mainCats.map(cat => (
             <button
               key={cat.id}
@@ -409,7 +718,6 @@ export default function Productos() {
         <div className="shrink-0 px-5 py-3 border-b border-border flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <h1 className="text-lg font-bold shrink-0">Productos</h1>
-            {/* Breadcrumb */}
             {selectedMainId !== null && (
               <span className="text-muted-foreground text-sm truncate">
                 / {mainCats.find(c => c.id === selectedMainId)?.nombre}
@@ -490,12 +798,12 @@ export default function Productos() {
                       <TableHead className="w-12 text-center">Foto</TableHead>
                       <TableHead className="w-24">Código</TableHead>
                       <TableHead>Nombre</TableHead>
-                      <TableHead className="w-36">Categoría</TableHead>
-                      <TableHead className="w-36">Subcategoría</TableHead>
+                      <TableHead className="w-32">Categoría</TableHead>
+                      <TableHead className="w-32">Subcategoría</TableHead>
                       <TableHead className="text-right w-24">Precio</TableHead>
-                      <TableHead className="text-right w-20">Stock</TableHead>
+                      <TableHead className="text-right w-24">Stock</TableHead>
                       {isAdmin && <TableHead className="text-center w-16">Activo</TableHead>}
-                      {isAdmin && <TableHead className="text-right w-20">Acciones</TableHead>}
+                      {isAdmin && <TableHead className="text-right w-28">Acciones</TableHead>}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -508,7 +816,6 @@ export default function Productos() {
                     )}
                     {!isLoading && productos.map((p: any) => (
                       <TableRow key={p.id} className={!p.activo ? 'opacity-50 bg-muted/10' : ''}>
-                        {/* Foto */}
                         <TableCell className="p-1.5 text-center">
                           {p.imagen ? (
                             <img src={p.imagen} alt={p.nombre} className="w-9 h-9 object-cover rounded border border-border inline-block" />
@@ -518,47 +825,51 @@ export default function Productos() {
                             </div>
                           )}
                         </TableCell>
-                        {/* Código */}
                         <TableCell className="font-mono text-xs text-muted-foreground">{p.codigo || '—'}</TableCell>
-                        {/* Nombre */}
                         <TableCell className="font-medium text-sm">
                           {p.nombre}
                         </TableCell>
-                        {/* Categoría principal — always from categoria_id */}
                         <TableCell className="text-xs">
                           {p.categoria_nombre
                             ? <span className="px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 font-medium whitespace-nowrap">{p.categoria_nombre}</span>
                             : <span className="text-muted-foreground/40">—</span>
                           }
                         </TableCell>
-                        {/* Subcategoría — from subcategoria_id */}
                         <TableCell className="text-xs">
                           {p.subcategoria_nombre
                             ? <span className="px-2 py-0.5 rounded-full bg-muted border border-border text-muted-foreground whitespace-nowrap">{p.subcategoria_nombre}</span>
                             : <span className="text-muted-foreground/40">—</span>
                           }
                         </TableCell>
-                        {/* Precio */}
                         <TableCell className="text-right font-medium text-sm">{formatMoney(p.precio)}</TableCell>
-                        {/* Stock */}
                         <TableCell className="text-right">
                           <StockBadge estado={p.stock_estado} stock={p.stock ?? 0} />
                         </TableCell>
-                        {/* Activo toggle */}
                         {isAdmin && (
                           <TableCell className="text-center">
                             <Switch checked={p.activo} onCheckedChange={() => handleToggleActive(p.id, p.activo)} />
                           </TableCell>
                         )}
-                        {/* Actions */}
                         {isAdmin && (
                           <TableCell className="text-right">
-                            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(p)}>
-                              <Edit className="w-3.5 h-3.5" />
-                            </Button>
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:bg-destructive/10" onClick={() => handleDelete(p.id)}>
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </Button>
+                            <div className="flex items-center justify-end gap-1">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 text-[11px] px-2 gap-1 text-primary border-primary/30 hover:bg-primary/10 shrink-0 font-semibold"
+                                onClick={() => setStockProductModal(p)}
+                                title="Agregar stock acumulativo"
+                              >
+                                <Plus className="w-3 h-3" />
+                                Stock
+                              </Button>
+                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(p)}>
+                                <Edit className="w-3.5 h-3.5" />
+                              </Button>
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:bg-destructive/10" onClick={() => handleDelete(p.id)}>
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </Button>
+                            </div>
                           </TableCell>
                         )}
                       </TableRow>
@@ -584,6 +895,15 @@ export default function Productos() {
           </Tabs>
         </div>
       </div>
+
+      {/* ── MODAL AGREGAR STOCK ACUMULATIVO ───────────────────────────── */}
+      {isAdmin && stockProductModal && (
+        <AgregarStockModal
+          product={stockProductModal}
+          open={!!stockProductModal}
+          onClose={() => setStockProductModal(null)}
+        />
+      )}
 
       {/* ── ADD / EDIT MODAL ──────────────────────────────────────────────── */}
       {isAdmin && (
@@ -644,7 +964,6 @@ export default function Productos() {
 
               {/* Basic fields */}
               <div className="grid grid-cols-2 gap-3">
-                {/* Código de barras: primary scan/input target */}
                 <div className="space-y-1.5 col-span-2">
                   <Label htmlFor="codigo" className="flex items-center gap-1.5">
                     <Barcode className="w-4 h-4 text-primary" />
@@ -688,12 +1007,46 @@ export default function Productos() {
                   <Label htmlFor="costo">Precio de Compra</Label>
                   <Input id="costo" name="costo" type="number" step="0.01" defaultValue={editItem?.costo || ''} />
                 </div>
+
+                {/* Stock field: Editable on create, read-only with "+ Agregar stock" button on edit */}
                 <div className="space-y-1.5">
                   <Label htmlFor="stock">Stock Actual *</Label>
-                  <Input id="stock" name="stock" type="text" inputMode="decimal"
-                    step="any"
-                    defaultValue={editItem?.stock ?? 0} required />
+                  {isAddMode ? (
+                    <Input
+                      id="stock"
+                      name="stock"
+                      type="text"
+                      inputMode="decimal"
+                      step="any"
+                      defaultValue={0}
+                      required
+                    />
+                  ) : (
+                    <div className="flex gap-2 items-center">
+                      <Input
+                        id="stock"
+                        name="stock_readonly"
+                        type="text"
+                        value={editItem?.stock ?? 0}
+                        readOnly
+                        className="bg-muted font-mono font-bold cursor-not-allowed"
+                      />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setStockProductModal(editItem);
+                        }}
+                        className="shrink-0 text-xs font-semibold border-primary/30 text-primary hover:bg-primary/10 gap-1 h-9"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        Agregar stock
+                      </Button>
+                    </div>
+                  )}
                 </div>
+
                 <div className="space-y-1.5">
                   <Label htmlFor="stock_minimo">Stock Mínimo</Label>
                   <Input id="stock_minimo" name="stock_minimo" type="text" inputMode="decimal"
@@ -702,7 +1055,7 @@ export default function Productos() {
                 </div>
               </div>
 
-              {/* Category + Subcategory — side by side */}
+              {/* Category + Subcategory */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label>Categoría *</Label>

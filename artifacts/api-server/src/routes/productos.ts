@@ -1,13 +1,10 @@
 import { Router, type IRouter } from "express";
 import { eq, and, or, like, lte, sql } from "drizzle-orm";
-import { db, productosTable, categoriasTable, configuracionTable, detalleVentaTable } from "@workspace/db";
+import { db, productosTable, categoriasTable, configuracionTable, detalleVentaTable, movimientosStockTable, auditoriaTable, usuariosTable } from "@workspace/db";
+import { alias } from "drizzle-orm/sqlite-core";
 
 const router: IRouter = Router();
 
-// ── Aliases for the two categorias joins ──────────────────────────────────────
-// We need to join categoriasTable twice (once for categoria, once for subcategoria).
-// Drizzle supports aliased table references via .as()
-import { alias } from "drizzle-orm/sqlite-core";
 const subcategoriasTable = alias(categoriasTable, "subcategorias");
 
 function requireAdmin(req: any, res: any): boolean {
@@ -45,12 +42,6 @@ function stockEstado(stock: number, minimo: number | null | undefined, umbral: n
 }
 
 // ── GET /productos ─────────────────────────────────────────────────────────────
-// Params:
-//   q             — search by name or code
-//   categoria_id  — filter by main category (exact match on categoria_id column)
-//   subcategoria_id — filter by subcategory (only when categoria_id also provided)
-//   activo        — "true" | "false"
-//   stock_bajo    — "true"
 router.get("/productos", async (req, res): Promise<void> => {
   if (!requireAuth(req, res)) return;
 
@@ -123,7 +114,6 @@ router.post("/productos", async (req, res): Promise<void> => {
 
   const { codigo, nombre, precio, costo, stock, stock_minimo, categoria_id, subcategoria_id, imagen } = req.body ?? {};
 
-  // ── Validate codigo — always treated as string, never coerced to number ──
   let codigoFinal: string | null = null;
   if (codigo !== undefined && codigo !== null && codigo !== "") {
     if (typeof codigo !== "string") {
@@ -150,7 +140,6 @@ router.post("/productos", async (req, res): Promise<void> => {
   const catIdN    = categoria_id    != null ? parseInt(categoria_id,    10) : null;
   const subCatIdN = subcategoria_id != null ? parseInt(subcategoria_id, 10) : null;
 
-  // ── Duplicate barcode validation ──
   if (codigoFinal) {
     const [existing] = await db
       .select({ id: productosTable.id, nombre: productosTable.nombre })
@@ -289,6 +278,180 @@ router.get("/productos/:id", async (req, res): Promise<void> => {
     costo: (req as any).session?.rol === "admin" ? p.costo : undefined,
   });
 });
+
+// ── POST /productos/:id/stock-ingreso ──────────────────────────────────────────
+router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
+  if (!requireAdmin(req, res)) return;
+  const id = parseId(req.params.id);
+  if (id === null) { res.status(400).json({ error: "ID de producto inválido" }); return; }
+
+  const { renglones, cantidades } = req.body ?? {};
+  const rawList = Array.isArray(renglones) ? renglones : Array.isArray(cantidades) ? cantidades : [];
+
+  if (rawList.length === 0) {
+    res.status(400).json({ error: "Debes ingresar al menos una cantidad válida mayor a cero" });
+    return;
+  }
+
+  if (rawList.length > 100) {
+    res.status(400).json({ error: "Máximo 100 renglones por ingreso de stock" });
+    return;
+  }
+
+  const validQuantities: number[] = [];
+  for (const raw of rawList) {
+    if (raw === null || raw === undefined) continue;
+    const str = String(raw).trim().replace(",", ".");
+    if (str === "") continue;
+
+    const num = parseFloat(str);
+    if (!Number.isFinite(num) || num <= 0) {
+      res.status(400).json({ error: `La cantidad '${raw}' no es válida. Debe ser un número mayor a cero.` });
+      return;
+    }
+    if (num > 1_000_000) {
+      res.status(400).json({ error: `La cantidad '${raw}' supera el límite permitido.` });
+      return;
+    }
+    const rounded = Math.round(num * 1000) / 1000;
+    validQuantities.push(rounded);
+  }
+
+  if (validQuantities.length === 0) {
+    res.status(400).json({ error: "Debes ingresar al menos una cantidad válida mayor a cero" });
+    return;
+  }
+
+  const totalIngresado = Math.round(validQuantities.reduce((sum, q) => sum + q, 0) * 1000) / 1000;
+
+  await db.run(sql`
+    CREATE TABLE IF NOT EXISTS movimientos_stock (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      producto_id INTEGER NOT NULL REFERENCES productos(id),
+      usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+      stock_anterior REAL NOT NULL,
+      renglones TEXT NOT NULL,
+      total_ingresado REAL NOT NULL,
+      stock_resultante REAL NOT NULL,
+      fecha INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+  `);
+
+  try {
+    const userId = (req as any).session?.userId ?? 1;
+
+    const result = await db.transaction(async (tx) => {
+      const [prod] = await tx.select().from(productosTable).where(eq(productosTable.id, id));
+      if (!prod) {
+        throw new Error("Producto no encontrado");
+      }
+      if (!prod.activo) {
+        throw new Error("El producto está inactivo");
+      }
+
+      const stockAnterior = prod.stock;
+      const stockResultante = Math.round((stockAnterior + totalIngresado) * 1000) / 1000;
+
+      await tx
+        .update(productosTable)
+        .set({ stock: stockResultante })
+        .where(eq(productosTable.id, id));
+
+      await tx.insert(movimientosStockTable).values({
+        producto_id: id,
+        usuario_id: userId,
+        stock_anterior: stockAnterior,
+        renglones: JSON.stringify(validQuantities),
+        total_ingresado: totalIngresado,
+        stock_resultante: stockResultante,
+      });
+
+      const formattedQtyList = validQuantities.map(q => `+${q}`).join(" ");
+      await tx.insert(auditoriaTable).values({
+        usuario_id: userId,
+        accion: "ingreso_stock",
+        entidad: "producto",
+        entidad_id: id,
+        detalle: `Ingreso de stock acumulativo: anterior ${stockAnterior} -> (${formattedQtyList}) = total +${totalIngresado} -> resultante ${stockResultante}`,
+        monto: totalIngresado,
+      });
+
+      return {
+        id,
+        nombre: prod.nombre,
+        stock_anterior: stockAnterior,
+        total_ingresado: totalIngresado,
+        stock_resultante: stockResultante,
+      };
+    });
+
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    if (err.message === "Producto no encontrado") {
+      res.status(404).json({ error: "Producto no encontrado" });
+      return;
+    }
+    if (err.message === "El producto está inactivo") {
+      res.status(400).json({ error: "El producto está inactivo" });
+      return;
+    }
+    res.status(500).json({ error: err?.message || "Error al registrar el ingreso de stock" });
+  }
+});
+
+// ── GET /productos/:id/stock-historial ────────────────────────────────────────
+router.get("/productos/:id/stock-historial", async (req, res): Promise<void> => {
+  if (!requireAuth(req, res)) return;
+  const id = parseId(req.params.id);
+  if (id === null) { res.status(400).json({ error: "ID de producto inválido" }); return; }
+
+  await db.run(sql`
+    CREATE TABLE IF NOT EXISTS movimientos_stock (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      producto_id INTEGER NOT NULL REFERENCES productos(id),
+      usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+      stock_anterior REAL NOT NULL,
+      renglones TEXT NOT NULL,
+      total_ingresado REAL NOT NULL,
+      stock_resultante REAL NOT NULL,
+      fecha INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+  `);
+
+  const rows = await db
+    .select({
+      id: movimientosStockTable.id,
+      producto_id: movimientosStockTable.producto_id,
+      usuario_id: movimientosStockTable.usuario_id,
+      usuario_nombre: usuariosTable.nombre,
+      stock_anterior: movimientosStockTable.stock_anterior,
+      renglones: movimientosStockTable.renglones,
+      total_ingresado: movimientosStockTable.total_ingresado,
+      stock_resultante: movimientosStockTable.stock_resultante,
+      fecha: movimientosStockTable.fecha,
+    })
+    .from(movimientosStockTable)
+    .leftJoin(usuariosTable, eq(movimientosStockStockTableUsuarioId(movimientosStockTable), usuariosTable.id))
+    .where(eq(movimientosStockTable.producto_id, id))
+    .orderBy(sql`${movimientosStockTable.fecha} DESC`)
+    .limit(100);
+
+  res.json(rows.map(r => {
+    let parsedRenglones: number[] = [];
+    try {
+      parsedRenglones = JSON.parse(r.renglones);
+    } catch (_) {}
+    return {
+      ...r,
+      fecha: r.fecha.toISOString(),
+      renglones_parsed: parsedRenglones,
+    };
+  }));
+});
+
+function movimientosStockStockTableUsuarioId(table: typeof movimientosStockTable) {
+  return table.usuario_id;
+}
 
 // ── PUT /productos/:id ─────────────────────────────────────────────────────────
 router.put("/productos/:id", async (req, res): Promise<void> => {
