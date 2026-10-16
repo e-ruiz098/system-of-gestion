@@ -33,7 +33,6 @@ export default function Configuracion() {
   });
 
   // Preferences state
-  const [activaKg, setActivaKg] = useState(false);
   const [mostrarDecimales, setMostrarDecimales] = useState(false);
   const [activaCajon, setActivaCajon] = useState(false);
   const [redondeoActivo, setRedondeoActivo] = useState(true);
@@ -82,7 +81,6 @@ export default function Configuracion() {
         moneda: config.moneda,
         emite_tickets: config.emite_tickets,
       });
-      setActivaKg((config as any).activa_kg ?? false);
       setMostrarDecimales((config as any).mostrar_decimales ?? false);
       setActivaCajon((config as any).activa_cajon ?? false);
       setRedondeoActivo((config as any).redondeo_activo ?? true);
@@ -108,7 +106,6 @@ export default function Configuracion() {
       return;
     }
     updateConfigMutation.mutate({ data: {
-      activa_kg: activaKg,
       mostrar_decimales: mostrarDecimales,
       activa_cajon: activaCajon,
       redondeo_activo: redondeoActivo,
@@ -295,16 +292,6 @@ export default function Configuracion() {
                 <CardContent className="space-y-4">
                   <div className="flex items-center justify-between p-4 border rounded-lg">
                     <div>
-                      <Label className="text-sm font-medium">¿Activar ventas por peso (kg)?</Label>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        Permite asignar "Unidad" o "Kg" a cada producto. Si está apagado, todo se vende por unidad.
-                      </p>
-                    </div>
-                    <Switch checked={activaKg} onCheckedChange={setActivaKg} />
-                  </div>
-
-                  <div className="flex items-center justify-between p-4 border rounded-lg">
-                    <div>
                       <Label className="text-sm font-medium">Mostrar decimales en los montos</Label>
                       <p className="text-xs text-muted-foreground mt-0.5">
                         Apagado: <span className="font-mono">$1.222</span> · Encendido: <span className="font-mono">$1.222,50</span>
@@ -322,7 +309,7 @@ export default function Configuracion() {
                 </CardContent>
               </Card>
 
-              {/* Redondeo y Devoluciones (Movido desde Dispositivos a Preferencias) */}
+              {/* Redondeo y Devoluciones */}
               <Card className="max-w-2xl">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
@@ -394,7 +381,7 @@ export default function Configuracion() {
               </Card>
             </TabsContent>
 
-            {/* ─── DISPOSITIVOS (Mínimo, 3 filas compactas con tooltip y sin datos falsos) ─── */}
+            {/* ─── DISPOSITIVOS ───────────────────────────────────────────── */}
             <TabsContent value="dispositivos" className="m-0 pt-5">
               <Card className="max-w-2xl">
                 <CardHeader className="pb-3">

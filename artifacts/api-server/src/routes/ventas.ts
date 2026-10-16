@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { eq, and, gte, lte, desc, sql, isNull } from "drizzle-orm";
 import { db, ventasTable, detalleVentaTable, productosTable, usuariosTable, configuracionTable, aperturasCajaTable, devolucionesTable, detalleDevolucionTable, auditoriaTable, calcularRedondeo } from "@workspace/db";
+import { isDecimalAllowed } from "./productos";
 
 const router: IRouter = Router();
 
@@ -115,7 +116,6 @@ router.get("/ventas", async (req, res): Promise<void> => {
   const { fecha_desde, fecha_hasta, usuario_id, producto_id, numero_ticket } = req.query as Record<string, string>;
   const session = (req as any).session;
 
-  // Validate date strings to prevent injection via new Date()
   const desde = fecha_desde && !Number.isNaN(Date.parse(fecha_desde)) ? new Date(fecha_desde) : undefined;
   const hasta = fecha_hasta && !Number.isNaN(Date.parse(fecha_hasta)) ? new Date(fecha_hasta) : undefined;
   const uidFilter = session.rol === "admin"
@@ -255,8 +255,6 @@ router.post("/ventas", async (req, res): Promise<void> => {
     return;
   }
 
-  // Validate and write against one serialized snapshot so concurrent sales
-  // cannot both consume the same available stock.
   let venta: typeof ventasTable.$inferSelect | undefined;
   try {
     await db.transaction(async (tx) => {
@@ -283,6 +281,7 @@ router.post("/ventas", async (req, res): Promise<void> => {
           precio: productosTable.precio,
           stock: productosTable.stock,
           nombre: productosTable.nombre,
+          unidad_tipo: productosTable.unidad_tipo,
         })
         .from(productosTable)
         .where(and(
@@ -295,6 +294,12 @@ router.post("/ventas", async (req, res): Promise<void> => {
       for (const line of detalleConsolidado) {
         const producto = productoMap.get(line.producto_id);
         if (!producto) throw Object.assign(new Error(`Producto ${line.producto_id} no encontrado o inactivo`), { status: 400 });
+
+        // RULE: Strict check on non-decimal products
+        if (!isDecimalAllowed(producto.unidad_tipo) && line.cantidad % 1 !== 0) {
+          throw Object.assign(new Error(`El producto '${producto.nombre}' no admite cantidades decimales`), { status: 400 });
+        }
+
         if (producto.stock < line.cantidad) {
           throw Object.assign(new Error(`Stock insuficiente para el producto ${producto.nombre} (disponible: ${producto.stock})`), { status: 400 });
         }
@@ -377,7 +382,7 @@ router.post("/ventas", async (req, res): Promise<void> => {
           subtotal: linea.subtotal,
         });
         await tx.update(productosTable)
-          .set({ stock: sql`${productosTable.stock} - ${linea.cantidad}` })
+          .set({ stock: sql`ROUND(${productosTable.stock} - ${linea.cantidad}, 3)` })
           .where(eq(productosTable.id, linea.producto_id));
       }
     }, { behavior: "immediate" });
@@ -459,7 +464,6 @@ router.get("/ventas/:id", async (req, res): Promise<void> => {
     .leftJoin(productosTable, eq(detalleVentaTable.producto_id, productosTable.id))
     .where(eq(detalleVentaTable.venta_id, id));
 
-  // Obtener cantidades ya devueltas por producto
   const devolucionesPrevias = await db
     .select({
       producto_id: detalleDevolucionTable.producto_id,
@@ -475,14 +479,12 @@ router.get("/ventas/:id", async (req, res): Promise<void> => {
     yaDevueltoMap.set(pid, (yaDevueltoMap.get(pid) ?? 0) + d.cantidad);
   }
 
-  // Agregar cantidades devueltas a cada detalle
   const detallesConDevoluciones = detalles.map(d => ({
     ...d,
     cantidad_devuelta: yaDevueltoMap.get(d.producto_id!) ?? 0,
     cantidad_devolvible: d.cantidad - (yaDevueltoMap.get(d.producto_id!) ?? 0),
   }));
 
-  // Calcular estado derivado de la venta
   let estado: string;
   if (venta.anulada) {
     estado = "anulada";
@@ -579,7 +581,6 @@ router.get("/ventas/ticket/:numero", async (req, res): Promise<void> => {
     .leftJoin(productosTable, eq(detalleVentaTable.producto_id, productosTable.id))
     .where(eq(detalleVentaTable.venta_id, venta.id));
 
-  // Obtener cantidades ya devueltas por producto
   const devolucionesPrevias = await db
     .select({
       producto_id: detalleDevolucionTable.producto_id,
@@ -595,14 +596,12 @@ router.get("/ventas/ticket/:numero", async (req, res): Promise<void> => {
     yaDevueltoMap.set(pid, (yaDevueltoMap.get(pid) ?? 0) + d.cantidad);
   }
 
-  // Agregar cantidades devueltas a cada detalle
   const detallesConDevoluciones = detalles.map(d => ({
     ...d,
     cantidad_devuelta: yaDevueltoMap.get(d.producto_id!) ?? 0,
     cantidad_devolvible: d.cantidad - (yaDevueltoMap.get(d.producto_id!) ?? 0),
   }));
 
-  // Calcular estado derivado de la venta
   let estado: string;
   if (venta.anulada) {
     estado = "anulada";
@@ -626,7 +625,6 @@ router.get("/ventas/ticket/:numero", async (req, res): Promise<void> => {
     }
   }
 
-  // Calcular vencimiento del plazo de devolución
   const [config] = await db
     .select({ horas_limite: configuracionTable.horas_limite_devolucion })
     .from(configuracionTable)
@@ -690,7 +688,7 @@ router.delete("/ventas/:id", async (req, res): Promise<void> => {
       for (const line of detalles) {
         await tx
           .update(productosTable)
-          .set({ stock: sql`${productosTable.stock} + ${line.cantidad}` })
+          .set({ stock: sql`ROUND(${productosTable.stock} + ${line.cantidad}, 3)` })
           .where(eq(productosTable.id, line.producto_id!));
       }
       await tx.update(ventasTable).set({

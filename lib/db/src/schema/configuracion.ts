@@ -17,7 +17,6 @@ export const configuracionTable = sqliteTable("configuracion", {
   tema_color: text("tema_color").notNull().default("default"),
   stock_bajo_umbral_global: integer("stock_bajo_umbral_global").notNull().default(5),
   fecha_instalacion: text("fecha_instalacion"),
-  activa_kg: integer("activa_kg", { mode: "boolean" }).notNull().default(false),
   mostrar_decimales: integer("mostrar_decimales", { mode: "boolean" }).notNull().default(false),
   activa_cajon: integer("activa_cajon", { mode: "boolean" }).notNull().default(false),
   redondeo_activo: integer("redondeo_activo", { mode: "boolean" }).notNull().default(true),

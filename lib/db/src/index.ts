@@ -49,31 +49,51 @@ const client = createClient({
 });
 
 // Run schema migration checks safely
-client.execute(`
-  CREATE TABLE IF NOT EXISTS movimientos_stock (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    producto_id INTEGER NOT NULL REFERENCES productos(id),
-    usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
-    tipo TEXT NOT NULL DEFAULT 'ingreso',
-    motivo TEXT,
-    stock_anterior REAL NOT NULL,
-    renglones TEXT NOT NULL,
-    total_ingresado REAL NOT NULL,
-    stock_resultante REAL NOT NULL,
-    fecha INTEGER NOT NULL DEFAULT (unixepoch()),
-    anulado INTEGER NOT NULL DEFAULT 0,
-    motivo_anulacion TEXT,
-    anulado_por_usuario INTEGER REFERENCES usuarios(id),
-    fecha_anulacion INTEGER
-  );
-`).then(() => {
-  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN tipo TEXT NOT NULL DEFAULT 'ingreso';`).catch(() => {});
-  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN motivo TEXT;`).catch(() => {});
-  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN anulado INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
-  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN motivo_anulacion TEXT;`).catch(() => {});
-  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN anulado_por_usuario INTEGER REFERENCES usuarios(id);`).catch(() => {});
-  client.execute(`ALTER TABLE movimientos_stock ADD COLUMN fecha_anulacion INTEGER;`).catch(() => {});
-}).catch(() => {});
+async function runMigrations() {
+  try {
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS movimientos_stock (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        producto_id INTEGER NOT NULL REFERENCES productos(id),
+        usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+        tipo TEXT NOT NULL DEFAULT 'ingreso',
+        motivo TEXT,
+        stock_anterior REAL NOT NULL,
+        renglones TEXT NOT NULL,
+        total_ingresado REAL NOT NULL,
+        stock_resultante REAL NOT NULL,
+        fecha INTEGER NOT NULL DEFAULT (unixepoch()),
+        anulado INTEGER NOT NULL DEFAULT 0,
+        motivo_anulacion TEXT,
+        anulado_por_usuario INTEGER REFERENCES usuarios(id),
+        fecha_anulacion INTEGER
+      );
+    `);
+    await client.execute(`ALTER TABLE movimientos_stock ADD COLUMN tipo TEXT NOT NULL DEFAULT 'ingreso';`).catch(() => {});
+    await client.execute(`ALTER TABLE movimientos_stock ADD COLUMN motivo TEXT;`).catch(() => {});
+    await client.execute(`ALTER TABLE movimientos_stock ADD COLUMN anulado INTEGER NOT NULL DEFAULT 0;`).catch(() => {});
+    await client.execute(`ALTER TABLE movimientos_stock ADD COLUMN motivo_anulacion TEXT;`).catch(() => {});
+    await client.execute(`ALTER TABLE movimientos_stock ADD COLUMN anulado_por_usuario INTEGER REFERENCES usuarios(id);`).catch(() => {});
+    await client.execute(`ALTER TABLE movimientos_stock ADD COLUMN fecha_anulacion INTEGER;`).catch(() => {});
+
+    // Migration: Identify historical decimal products and set unidad_tipo = 'kg' ("Admite decimales = Sí")
+    await client.execute(`
+      UPDATE productos
+      SET unidad_tipo = 'kg'
+      WHERE id IN (
+        SELECT id FROM productos WHERE (stock % 1) != 0
+        UNION
+        SELECT DISTINCT producto_id FROM detalle_venta WHERE (cantidad % 1) != 0 AND producto_id IS NOT NULL
+        UNION
+        SELECT DISTINCT producto_id FROM detalle_devolucion WHERE (cantidad % 1) != 0 AND producto_id IS NOT NULL
+      );
+    `).catch(() => {});
+  } catch (err) {
+    // ignore
+  }
+}
+
+runMigrations();
 
 export const db = drizzle(client, { schema });
 

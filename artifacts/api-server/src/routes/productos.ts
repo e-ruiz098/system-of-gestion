@@ -29,6 +29,12 @@ function parseId(raw: string | string[]): number | null {
   return Number.isNaN(n) || n <= 0 ? null : n;
 }
 
+export function isDecimalAllowed(unidadTipo: string | null | undefined): boolean {
+  if (!unidadTipo) return false;
+  const t = unidadTipo.trim().toLowerCase();
+  return t !== "unidad" && t !== "unidades" && t !== "u" && t !== "entero";
+}
+
 export function parseStrictNumber(val: any): { num: number; error?: string } {
   if (val === null || val === undefined) {
     return { num: NaN, error: "El valor no puede estar vacío." };
@@ -40,12 +46,10 @@ export function parseStrictNumber(val: any): { num: number; error?: string } {
   const str = String(val).trim();
   if (str === "") return { num: NaN, error: "El valor no puede estar vacío." };
 
-  // Reject strings with non-numeric chars other than digits, single dot, or single comma
   if (!/^-?\d+([.,]\d+)?$/.test(str)) {
     return { num: NaN, error: `El valor '${val}' no es válido. Use solo dígitos con un separador decimal opcional (ej. 12.4).` };
   }
 
-  // Reject ambiguous thousands separator format like "1.500" or "10.000"
   if (/^\d+[.,]\d{3}$/.test(str)) {
     return { num: NaN, error: `El formato '${val}' es ambiguo (puede interpretarse como mil o decimal). Escriba '1500' para mil quinientos o '1.5' para decimales.` };
   }
@@ -141,7 +145,7 @@ router.get("/productos", async (req, res): Promise<void> => {
 router.post("/productos", async (req, res): Promise<void> => {
   if (!requireAdmin(req, res)) return;
 
-  const { codigo, nombre, precio, costo, stock, stock_minimo, categoria_id, subcategoria_id, imagen } = req.body ?? {};
+  const { codigo, nombre, precio, costo, stock, stock_minimo, unidad_tipo, categoria_id, subcategoria_id, imagen } = req.body ?? {};
 
   let codigoFinal: string | null = null;
   if (codigo !== undefined && codigo !== null && codigo !== "") {
@@ -172,6 +176,13 @@ router.post("/productos", async (req, res): Promise<void> => {
     res.status(400).json({ error: parsedStock.error || "stock inválido" }); return;
   }
 
+  const finalUnidadTipo = typeof unidad_tipo === "string" && unidad_tipo.trim() ? unidad_tipo.trim() : "unidad";
+
+  if (!isDecimalAllowed(finalUnidadTipo) && parsedStock.num % 1 !== 0) {
+    res.status(400).json({ error: `El producto '${nombre}' no admite cantidades decimales` });
+    return;
+  }
+
   const precioN = Math.round(parsedPrecio.num * 100) / 100;
   const stockN = Math.round(parsedStock.num * 1000) / 1000;
 
@@ -200,6 +211,7 @@ router.post("/productos", async (req, res): Promise<void> => {
         costo:           costo  != null ? Number(costo) : null,
         stock:           stockN,
         stock_minimo:    stock_minimo != null ? Number(stock_minimo) : null,
+        unidad_tipo:     finalUnidadTipo,
         categoria_id:    catIdN,
         subcategoria_id: subCatIdN,
         activo:          true,
@@ -273,7 +285,7 @@ router.post("/productos/import", async (req, res): Promise<void> => {
 
   for (const row of rows) {
     try {
-      const { codigo, nombre, precio, costo, stock, categoria } = row;
+      const { codigo, nombre, precio, costo, stock, categoria, unidad_tipo } = row;
       if (!nombre || typeof nombre !== "string" || precio == null) { errors++; continue; }
 
       const parsedPrecio = parseStrictNumber(precio);
@@ -284,6 +296,11 @@ router.post("/productos/import", async (req, res): Promise<void> => {
         const parsedStock = parseStrictNumber(stock);
         if (parsedStock.error || parsedStock.num < 0) { errors++; continue; }
         stockN = Math.round(parsedStock.num * 1000) / 1000;
+      }
+
+      const finalUnidadTipo = typeof unidad_tipo === "string" && unidad_tipo.trim() ? unidad_tipo.trim() : "unidad";
+      if (!isDecimalAllowed(finalUnidadTipo) && stockN % 1 !== 0) {
+        errors++; continue;
       }
 
       let categoria_id: number | null = null;
@@ -303,7 +320,7 @@ router.post("/productos/import", async (req, res): Promise<void> => {
           const stockDiff = Math.round((stockN - existing.stock) * 1000) / 1000;
 
           await db.update(productosTable)
-            .set({ nombre: nombre.trim(), precio: parsedPrecio.num, costo: costo != null ? Number(costo) : null, stock: stockN, categoria_id })
+            .set({ nombre: nombre.trim(), precio: parsedPrecio.num, costo: costo != null ? Number(costo) : null, stock: stockN, categoria_id, unidad_tipo: finalUnidadTipo })
             .where(eq(productosTable.id, existing.id));
 
           if (Math.abs(stockDiff) > 0.0001) {
@@ -325,7 +342,7 @@ router.post("/productos/import", async (req, res): Promise<void> => {
       const [newProd] = await db.insert(productosTable).values({
         codigo: codigo ?? null, nombre: nombre.trim().slice(0, 200),
         precio: parsedPrecio.num, costo: costo != null ? Number(costo) : null,
-        stock: stockN, categoria_id, activo: true,
+        stock: stockN, unidad_tipo: finalUnidadTipo, categoria_id, activo: true,
       }).returning();
 
       if (stockN > 0) {
@@ -397,6 +414,9 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
   const id = parseId(req.params.id);
   if (id === null) { res.status(400).json({ error: "ID de producto inválido" }); return; }
 
+  const [prod] = await db.select().from(productosTable).where(eq(productosTable.id, id));
+  if (!prod) { res.status(404).json({ error: "Producto no encontrado" }); return; }
+
   const { renglones, cantidades } = req.body ?? {};
   const rawList = Array.isArray(renglones) ? renglones : Array.isArray(cantidades) ? cantidades : [];
 
@@ -421,6 +441,10 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
       res.status(400).json({ error: `La cantidad '${raw}' no es válida. Debe ser un número mayor a cero.` });
       return;
     }
+    if (!isDecimalAllowed(prod.unidad_tipo) && parsed.num % 1 !== 0) {
+      res.status(400).json({ error: `El producto '${prod.nombre}' no admite cantidades decimales` });
+      return;
+    }
     if (parsed.num > 100_000) {
       res.status(400).json({ error: `La cantidad '${raw}' supera el límite máximo permitido (100.000 por renglón)` });
       return;
@@ -440,10 +464,6 @@ router.post("/productos/:id/stock-ingreso", async (req, res): Promise<void> => {
     const userId = (req as any).session.userId;
 
     const result = await db.transaction(async (tx) => {
-      const [prod] = await tx.select().from(productosTable).where(eq(productosTable.id, id));
-      if (!prod) {
-        throw Object.assign(new Error("Producto no encontrado"), { status: 404 });
-      }
       if (!prod.activo) {
         throw Object.assign(new Error("El producto está inactivo"), { status: 400 });
       }
@@ -525,7 +545,7 @@ router.post("/productos/:id/stock-ingreso/:movimientoId/deshacer", async (req, r
       }
 
       const elapsedSeconds = (Date.now() - new Date(mov.fecha).getTime()) / 1000;
-      if (elapsedSeconds > 35) { // grace window over 30s
+      if (elapsedSeconds > 35) {
         throw Object.assign(new Error("El tiempo de 30 segundos para deshacer este ingreso ha expirado"), { status: 400 });
       }
 
@@ -534,7 +554,6 @@ router.post("/productos/:id/stock-ingreso/:movimientoId/deshacer", async (req, r
         throw Object.assign(new Error("Producto no encontrado"), { status: 404 });
       }
 
-      // Atomic conditional update enforcing stock sufficiency
       const updateResult = await tx.run(sql`UPDATE productos SET stock = ROUND(stock - ${mov.total_ingresado}, 3) WHERE id = ${id} AND stock >= ${mov.total_ingresado}`);
 
       if (updateResult.rowsAffected === 0) {
@@ -545,7 +564,6 @@ router.post("/productos/:id/stock-ingreso/:movimientoId/deshacer", async (req, r
       const [updatedProd] = await tx.select({ stock: productosTable.stock }).from(productosTable).where(eq(productosTable.id, id));
       const stockResultante = updatedProd.stock;
 
-      // Mark original as voided
       await tx.update(movimientosStockTable).set({
         anulado: true,
         motivo_anulacion: "Deshecho en ventana de 30 segundos",
@@ -553,7 +571,6 @@ router.post("/productos/:id/stock-ingreso/:movimientoId/deshacer", async (req, r
         fecha_anulacion: new Date(),
       }).where(eq(movimientosStockTable.id, movimientoId));
 
-      // Record counter movement
       await tx.insert(movimientosStockTable).values({
         producto_id: id,
         usuario_id: userId,
@@ -630,7 +647,6 @@ router.post("/productos/:id/stock-historial/:movimientoId/anular", async (req, r
         throw Object.assign(new Error("Producto no encontrado"), { status: 404 });
       }
 
-      // Atomic conditional update enforcing stock sufficiency
       const updateResult = await tx.run(sql`UPDATE productos SET stock = ROUND(stock - ${mov.total_ingresado}, 3) WHERE id = ${id} AND stock >= ${mov.total_ingresado}`);
 
       if (updateResult.rowsAffected === 0) {
@@ -643,7 +659,6 @@ router.post("/productos/:id/stock-historial/:movimientoId/anular", async (req, r
 
       const motivoText = motivo.trim();
 
-      // Mark original as voided
       await tx.update(movimientosStockTable).set({
         anulado: true,
         motivo_anulacion: motivoText,
@@ -651,7 +666,6 @@ router.post("/productos/:id/stock-historial/:movimientoId/anular", async (req, r
         fecha_anulacion: new Date(),
       }).where(eq(movimientosStockTable.id, movimientoId));
 
-      // Insert counter movement
       await tx.insert(movimientosStockTable).values({
         producto_id: id,
         usuario_id: userId,
@@ -746,12 +760,26 @@ router.put("/productos/:id", async (req, res): Promise<void> => {
   const id = parseId(req.params.id);
   if (id === null) { res.status(400).json({ error: "ID inválido" }); return; }
 
-  const { codigo, nombre, precio, costo, stock, stock_minimo, categoria_id, subcategoria_id, activo, imagen, motivo } = req.body ?? {};
+  const { codigo, nombre, precio, costo, stock, stock_minimo, unidad_tipo, categoria_id, subcategoria_id, activo, imagen, motivo } = req.body ?? {};
 
   const [currentProd] = await db.select().from(productosTable).where(eq(productosTable.id, id));
   if (!currentProd) { res.status(404).json({ error: "Product not found" }); return; }
 
   const updates: Record<string, unknown> = {};
+
+  const nextUnidadTipo = unidad_tipo !== undefined && typeof unidad_tipo === "string" ? unidad_tipo.trim() : currentProd.unidad_tipo;
+
+  // RULE: Switch from "Sí" (decimals allowed) to "No" (non-decimal) MUST be rejected if current stock has decimals
+  if (isDecimalAllowed(currentProd.unidad_tipo) && !isDecimalAllowed(nextUnidadTipo)) {
+    if (currentProd.stock % 1 !== 0) {
+      res.status(400).json({ error: "No se puede desactivar decimales mientras el stock actual tenga decimales" });
+      return;
+    }
+  }
+
+  if (unidad_tipo !== undefined) {
+    updates.unidad_tipo = nextUnidadTipo;
+  }
 
   if (codigo !== undefined) {
     if (codigo === null || codigo === "") {
@@ -798,6 +826,11 @@ router.put("/productos/:id", async (req, res): Promise<void> => {
   if (stock != null) {
     const parsedStock = parseStrictNumber(stock);
     if (parsedStock.error || parsedStock.num < 0) { res.status(400).json({ error: parsedStock.error || "stock inválido" }); return; }
+
+    if (!isDecimalAllowed(nextUnidadTipo) && parsedStock.num % 1 !== 0) {
+      res.status(400).json({ error: `El producto '${currentProd.nombre}' no admite cantidades decimales` });
+      return;
+    }
 
     newStockVal = Math.round(parsedStock.num * 1000) / 1000;
     stockDifference = Math.round((newStockVal - currentProd.stock) * 1000) / 1000;

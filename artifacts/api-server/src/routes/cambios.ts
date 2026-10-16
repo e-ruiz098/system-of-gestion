@@ -6,6 +6,7 @@ import {
   configuracionTable, aperturasCajaTable, calcularRedondeo, auditoriaTable,
   montosVenta,
 } from "@workspace/db";
+import { isDecimalAllowed } from "./productos";
 
 const router: IRouter = Router();
 
@@ -25,12 +26,10 @@ function normalizeCantidad(raw: unknown, etiqueta: string): number {
   return Math.round(cant * 1000) / 1000;
 }
 
-function assertCantidadSegunUnidad(cantidad: number, unidadTipo: string | null | undefined, etiqueta: string) {
-  const tipo = (unidadTipo || "unidad").toLowerCase();
-  const esUnidad = tipo === "unidad" || tipo === "unidades" || tipo === "u";
-  if (esUnidad && !Number.isInteger(cantidad)) {
+function assertCantidadSegunUnidad(cantidad: number, unidadTipo: string | null | undefined, nombreProducto: string, etiqueta: string) {
+  if (!isDecimalAllowed(unidadTipo) && cantidad % 1 !== 0) {
     throw Object.assign(
-      new Error(`${etiqueta} debe ser un número entero para productos vendidos por unidad`),
+      new Error(`El producto '${nombreProducto}' no admite cantidades decimales`),
       { status: 400 },
     );
   }
@@ -205,7 +204,7 @@ router.post("/cambios", async (req, res): Promise<void> => {
         .from(productosTable)
         .where(eq(productosTable.id, prodDevId));
 
-      assertCantidadSegunUnidad(cantDev, productoDevuelto?.unidad_tipo, "La cantidad a cambiar");
+      assertCantidadSegunUnidad(cantDev, productoDevuelto?.unidad_tipo, productoDevuelto?.nombre || "devuelto", "La cantidad a cambiar");
 
       const devsPrevias = await tx
         .select({
@@ -243,7 +242,7 @@ router.post("/cambios", async (req, res): Promise<void> => {
         throw Object.assign(new Error("El producto nuevo no existe o no está activo"), { status: 400 });
       }
 
-      assertCantidadSegunUnidad(cantNueva, productoNuevo.unidad_tipo, "La cantidad del producto nuevo");
+      assertCantidadSegunUnidad(cantNueva, productoNuevo.unidad_tipo, productoNuevo.nombre, "La cantidad del producto nuevo");
 
       const stockDisponible = (prodNuevoId === prodDevId && reingresa)
         ? productoNuevo.stock + cantDev
@@ -405,7 +404,7 @@ router.post("/cambios", async (req, res): Promise<void> => {
 
       if (reingresa) {
         await tx.update(productosTable)
-          .set({ stock: sql`${productosTable.stock} + ${cantDev}` })
+          .set({ stock: sql`ROUND(${productosTable.stock} + ${cantDev}, 3)` })
           .where(eq(productosTable.id, prodDevId));
       }
 
@@ -452,7 +451,7 @@ router.post("/cambios", async (req, res): Promise<void> => {
       });
 
       const descontados = await tx.update(productosTable)
-        .set({ stock: sql`${productosTable.stock} - ${cantNueva}` })
+        .set({ stock: sql`ROUND(${productosTable.stock} - ${cantNueva}, 3)` })
         .where(and(
           eq(productosTable.id, prodNuevoId),
           sql`${productosTable.stock} >= ${cantNueva}`,

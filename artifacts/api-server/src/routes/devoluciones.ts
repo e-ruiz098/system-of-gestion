@@ -6,6 +6,7 @@ import {
   configuracionTable, aperturasCajaTable, calcularRedondeo, auditoriaTable,
   montosVenta,
 } from "@workspace/db";
+import { isDecimalAllowed } from "./productos";
 
 const router: IRouter = Router();
 
@@ -32,7 +33,6 @@ router.get("/devoluciones", async (req, res): Promise<void> => {
   const desde = fecha_desde && !Number.isNaN(Date.parse(fecha_desde)) ? new Date(fecha_desde) : undefined;
   const hasta = fecha_hasta && !Number.isNaN(Date.parse(fecha_hasta)) ? new Date(fecha_hasta) : undefined;
 
-  // Vendedores solo ven sus propias devoluciones
   const whereConditions = [
     desde ? gte(devolucionesTable.fecha, desde) : undefined,
     hasta ? lte(devolucionesTable.fecha, hasta) : undefined,
@@ -120,7 +120,6 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
 
   const { venta_id, motivo, nombre_comprador, metodo_reembolso, detalle } = req.body ?? {};
 
-  // ── Validación básica ────────────────────────────────────────────────────
   if (!venta_id || !Array.isArray(detalle) || detalle.length === 0) {
     res.status(400).json({ error: "venta_id y detalle son requeridos" });
     return;
@@ -149,7 +148,6 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
 
   const session = (req as any).session;
 
-  // ── Obtener configuración ─────────────────────────────────────────────────
   const [config] = await db
     .select({
       horas_limite: configuracionTable.horas_limite_devolucion,
@@ -165,7 +163,6 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
   const requiereTicket = config?.requiere_ticket ?? true;
   const redondeoActivo = config?.redondeo_activo ?? true;
 
-  // ── Consolidar líneas duplicadas del mismo producto ───────────────────────
   const reingresaMap = new Map<number, boolean>();
   const lineasConsolidadasMap = new Map<number, number>();
   for (const line of detalle) {
@@ -203,12 +200,10 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
     reingresa_stock: reingresaMap.get(producto_id) ?? true,
   }));
 
-  // ── TRANSACCIÓN ATÓMICA (BEGIN IMMEDIATE: la 2.ª espera y relee el estado) ─
   let dev: any = null;
 
   try {
   await db.transaction(async (tx) => {
-    // ── Verificar que la venta existe DENTRO de la transacción ───────────
     const [venta] = await tx
       .select({
         id: ventasTable.id,
@@ -232,7 +227,6 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
       throw Object.assign(new Error("No se puede devolver una venta anulada"), { status: 400 });
     }
 
-    // ── Validar plazo DENTRO de la transacción ───────────────────────────
     const ahora = new Date();
     const fechaVenta = venta.fecha;
     const horasDesdeVenta = (ahora.getTime() - fechaVenta.getTime()) / (1000 * 60 * 60);
@@ -242,17 +236,14 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
       throw new Error(`El plazo para devolver ha vencido. Venció el ${fechaVencimiento.toLocaleString('es-ES')}`);
     }
 
-    // ── Validar ticket requerido DENTRO de la transacción ───────────────
     if (requiereTicket && (!config?.emite_tickets || !venta.numero_ticket)) {
       throw new Error("Las devoluciones requieren ticket, pero el negocio no emite tickets o esta venta no tiene número de ticket.");
     }
 
-    // ── Permisos DENTRO de la transacción ─────────────────────────────────
     if (session.rol !== "admin" && venta.usuario_id !== session.userId) {
       throw Object.assign(new Error("No tienes permiso para devolver esta venta"), { status: 403 });
     }
 
-    // ── Obtener caja abierta del usuario DENTRO de la transacción ─────────
     const [cajaActiva] = await tx
       .select({ id: aperturasCajaTable.id })
       .from(aperturasCajaTable)
@@ -262,40 +253,40 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
       ))
       .limit(1);
 
-    // ── Validar método de reembolso DENTRO de la transacción ───────────────
     const metodoReembolsoRaw = metodo_reembolso || (["efectivo", "tarjeta", "transferencia"].includes(venta.metodo_pago ?? "") ? venta.metodo_pago : "efectivo");
     if (typeof metodoReembolsoRaw !== "string" || !["efectivo", "tarjeta", "transferencia"].includes(metodoReembolsoRaw)) {
       throw new Error("Método de reembolso inválido. Debe ser efectivo, tarjeta o transferencia");
     }
     const metodoReembolso = metodoReembolsoRaw as "efectivo" | "tarjeta" | "transferencia";
 
-    // Si es efectivo, validar caja abierta
     if (metodoReembolso === "efectivo" && !cajaActiva) {
       throw new Error("Para reembolsar en efectivo debes tener una caja abierta");
     }
 
-    // ── Cargar líneas originales de la venta DENTRO de la transacción ───────
     const originalLines = await tx
       .select({
         producto_id: detalleVentaTable.producto_id,
         cantidad: detalleVentaTable.cantidad,
         precio_unitario: detalleVentaTable.precio_unitario,
+        nombre: productosTable.nombre,
+        unidad_tipo: productosTable.unidad_tipo,
       })
       .from(detalleVentaTable)
       .leftJoin(productosTable, eq(detalleVentaTable.producto_id, productosTable.id))
       .where(eq(detalleVentaTable.venta_id, ventaId));
 
-    const originalQtyMap = new Map<number, { cantidad: number; precio: number }>();
+    const originalQtyMap = new Map<number, { cantidad: number; precio: number; nombre: string; unidad_tipo: string }>();
     for (const line of originalLines) {
       const pid = line.producto_id!;
-      const existing = originalQtyMap.get(pid) || { cantidad: 0, precio: 0 };
+      const existing = originalQtyMap.get(pid) || { cantidad: 0, precio: 0, nombre: line.nombre || "", unidad_tipo: line.unidad_tipo || "unidad" };
       originalQtyMap.set(pid, {
         cantidad: existing.cantidad + line.cantidad,
         precio: line.precio_unitario,
+        nombre: line.nombre || "",
+        unidad_tipo: line.unidad_tipo || "unidad",
       });
     }
 
-    // ── Obtener ya devuelto por producto DENTRO de la transacción ───────────
     const devolucionesPreviasDetalle = await tx
       .select({
         producto_id: detalleDevolucionTable.producto_id,
@@ -311,7 +302,6 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
       yaDevueltoMap.set(pid, (yaDevueltoMap.get(pid) ?? 0) + d.cantidad);
     }
 
-    // ── Validar cada línea de devolución DENTRO de la transacción ───────────
     const lineas: { 
       producto_id: number; 
       cantidad: number; 
@@ -325,6 +315,10 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
       const original = originalQtyMap.get(line.producto_id);
       if (!original) {
         throw new Error(`El producto ${line.producto_id} no pertenece a esta venta`);
+      }
+
+      if (!isDecimalAllowed(original.unidad_tipo) && line.cantidad % 1 !== 0) {
+        throw new Error(`El producto '${original.nombre}' no admite cantidades decimales`);
       }
 
       const yaDevuelto = yaDevueltoMap.get(line.producto_id) ?? 0;
@@ -346,14 +340,12 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
       subtotalDevolucion += subtotal;
     }
 
-    // ── Calcular reembolso con redondeo (función del Prompt 2) ───────────────
     const { ajusteRedondeo, total: totalReembolso } = calcularRedondeo(
       subtotalDevolucion,
       redondeoActivo,
       config?.redondeo_multiplo ?? 50,
     );
 
-    // ── Validar tope total y límites por método (ventas mixtas) ──────────────
     const devolucionesPrevias = await tx
       .select({
         metodo: devolucionesTable.metodo_reembolso,
@@ -367,7 +359,6 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
       throw new Error(`El reembolso total excede lo cobrado. Cobrado: ${venta.total}, Ya reembolsado: ${yaReembolsadoTotal}, Esta devolución: ${totalReembolso}`);
     }
 
-    // ── Si el reembolso es en efectivo, validar disponibilidad en la caja abierta ──
     if (metodoReembolso === "efectivo" && cajaActiva) {
       const [aperturaActual] = await tx
         .select({
@@ -414,7 +405,6 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
       }
     }
 
-    // ── Insertar devolución DENTRO de la transacción ───────────────────────
     const insertedDevolucion = await tx.insert(devolucionesTable).values({
       venta_id: ventaId,
       usuario_id: session.userId,
@@ -429,9 +419,8 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
     }).returning();
     dev = insertedDevolucion[0];
 
-    // ── Insertar detalles y actualizar stock DENTRO de la transacción ───────
     for (const linea of lineas) {
-      // @ts-ignore - Drizzle typing issue with boolean vs integer
+      // @ts-ignore
       await tx.insert(detalleDevolucionTable).values({
         devolucion_id: dev.id,
         producto_id: linea.producto_id,
@@ -441,16 +430,14 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
         reingresa_stock: linea.reingresa_stock ? 1 : 0,
       });
 
-      // Solo sumar stock si reingresa_stock es true
       if (linea.reingresa_stock) {
         await tx
           .update(productosTable)
-          .set({ stock: sql`${productosTable.stock} + ${linea.cantidad}` })
+          .set({ stock: sql`ROUND(${productosTable.stock} + ${linea.cantidad}, 3)` })
           .where(eq(productosTable.id, linea.producto_id));
       }
     }
 
-    // ── Registrar auditoría DENTRO de la transacción ───────────────────────
     await tx.insert(auditoriaTable).values({
       usuario_id: session.userId,
       accion: "devolucion",
@@ -476,7 +463,6 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
     .from(usuariosTable)
     .where(eq(usuariosTable.id, dev.usuario_id!));
 
-  // Obtener número de ticket
   const [ventaConTicket] = await db
     .select({ numero_ticket: ventasTable.numero_ticket })
     .from(ventasTable)
@@ -497,7 +483,7 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
     .leftJoin(productosTable, eq(detalleDevolucionTable.producto_id, productosTable.id))
     .where(eq(detalleDevolucionTable.devolucion_id, dev.id));
 
-  // @ts-ignore - Type narrowing issue
+  // @ts-ignore
   res.status(201).json({
     ...dev,
     // @ts-ignore
