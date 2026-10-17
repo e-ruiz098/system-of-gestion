@@ -394,7 +394,7 @@ router.get("/productos/:id", async (req, res): Promise<void> => {
     .leftJoin(subcategoriasTable, eq(productosTable.subcategoria_id, subcategoriasTable.id))
     .where(eq(productosTable.id, id));
 
-  if (!p) { res.status(404).json({ error: "Product not found" }); return; }
+  if (!p) { res.status(404).json({ error: "Producto no encontrado" }); return; }
   res.json({
     ...p,
     creado_en: p.creado_en.toISOString(),
@@ -763,7 +763,7 @@ router.put("/productos/:id", async (req, res): Promise<void> => {
   const { codigo, nombre, precio, costo, stock, stock_minimo, unidad_tipo, categoria_id, subcategoria_id, activo, imagen, motivo } = req.body ?? {};
 
   const [currentProd] = await db.select().from(productosTable).where(eq(productosTable.id, id));
-  if (!currentProd) { res.status(404).json({ error: "Product not found" }); return; }
+  if (!currentProd) { res.status(404).json({ error: "Producto no encontrado" }); return; }
 
   const updates: Record<string, unknown> = {};
 
@@ -920,11 +920,11 @@ router.delete("/productos/:id", async (req, res): Promise<void> => {
   const [hasSales] = await db.select({ id: detalleVentaTable.id }).from(detalleVentaTable).where(eq(detalleVentaTable.producto_id, id)).limit(1);
   if (hasSales) {
     await db.update(productosTable).set({ activo: false }).where(eq(productosTable.id, id));
-    res.json({ action: "deactivated", message: "Product has sales history; deactivated instead of deleted" });
+    res.json({ action: "deactivated", message: "El producto tiene historial de ventas; fue desactivado en lugar de eliminado" });
     return;
   }
   await db.delete(productosTable).where(eq(productosTable.id, id));
-  res.json({ action: "deleted", message: "Product deleted" });
+  res.json({ action: "deleted", message: "Producto eliminado" });
 });
 
 // ── PATCH /productos/:id/toggle-activo ─────────────────────────────────────────
@@ -934,7 +934,7 @@ router.patch("/productos/:id/toggle-activo", async (req, res): Promise<void> => 
   if (id === null) { res.status(400).json({ error: "ID inválido" }); return; }
 
   const [current] = await db.select({ activo: productosTable.activo }).from(productosTable).where(eq(productosTable.id, id));
-  if (!current) { res.status(404).json({ error: "Product not found" }); return; }
+  if (!current) { res.status(404).json({ error: "Producto no encontrado" }); return; }
 
   const [p] = await db.update(productosTable).set({ activo: !current.activo }).where(eq(productosTable.id, id)).returning();
   const umbral = await getStockUmbral();

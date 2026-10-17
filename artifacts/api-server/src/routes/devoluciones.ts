@@ -233,11 +233,11 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
     
     if (horasDesdeVenta > horasLimite) {
       const fechaVencimiento = new Date(fechaVenta.getTime() + horasLimite * 60 * 60 * 1000);
-      throw new Error(`El plazo para devolver ha vencido. Venció el ${fechaVencimiento.toLocaleString('es-ES')}`);
+      throw Object.assign(new Error(`El plazo para devolver ha vencido. Venció el ${fechaVencimiento.toLocaleString('es-ES')}`), { status: 400 });
     }
 
     if (requiereTicket && (!config?.emite_tickets || !venta.numero_ticket)) {
-      throw new Error("Las devoluciones requieren ticket, pero el negocio no emite tickets o esta venta no tiene número de ticket.");
+      throw Object.assign(new Error("Las devoluciones requieren ticket, pero el negocio no emite tickets o esta venta no tiene número de ticket."), { status: 400 });
     }
 
     if (session.rol !== "admin" && venta.usuario_id !== session.userId) {
@@ -255,12 +255,12 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
 
     const metodoReembolsoRaw = metodo_reembolso || (["efectivo", "tarjeta", "transferencia"].includes(venta.metodo_pago ?? "") ? venta.metodo_pago : "efectivo");
     if (typeof metodoReembolsoRaw !== "string" || !["efectivo", "tarjeta", "transferencia"].includes(metodoReembolsoRaw)) {
-      throw new Error("Método de reembolso inválido. Debe ser efectivo, tarjeta o transferencia");
+      throw Object.assign(new Error("Método de reembolso inválido. Debe ser efectivo, tarjeta o transferencia"), { status: 400 });
     }
     const metodoReembolso = metodoReembolsoRaw as "efectivo" | "tarjeta" | "transferencia";
 
     if (metodoReembolso === "efectivo" && !cajaActiva) {
-      throw new Error("Para reembolsar en efectivo debes tener una caja abierta");
+      throw Object.assign(new Error("Para reembolsar en efectivo debes tener una caja abierta"), { status: 400 });
     }
 
     const originalLines = await tx
@@ -314,16 +314,16 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
     for (const line of detalleConsolidado) {
       const original = originalQtyMap.get(line.producto_id);
       if (!original) {
-        throw new Error(`El producto ${line.producto_id} no pertenece a esta venta`);
+        throw Object.assign(new Error(`El producto ${line.producto_id} no pertenece a esta venta`), { status: 400 });
       }
 
       if (!isDecimalAllowed(original.unidad_tipo) && line.cantidad % 1 !== 0) {
-        throw new Error(`El producto '${original.nombre}' no admite cantidades decimales`);
+        throw Object.assign(new Error(`El producto '${original.nombre}' no admite cantidades decimales`), { status: 400 });
       }
 
       const yaDevuelto = yaDevueltoMap.get(line.producto_id) ?? 0;
       if (yaDevuelto + line.cantidad > original.cantidad) {
-        throw new Error(`La cantidad a devolver (${line.cantidad}) excede lo disponible. Ya devuelto: ${yaDevuelto}, Vendido: ${original.cantidad}`);
+        throw Object.assign(new Error(`La cantidad a devolver (${line.cantidad}) excede lo disponible. Ya devuelto: ${yaDevuelto}, Vendido: ${original.cantidad}`), { status: 400 });
       }
 
       const precioUnitario = original.precio;
@@ -356,7 +356,7 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
 
     const yaReembolsadoTotal = devolucionesPrevias.reduce((sum, d) => sum + (d.total || 0), 0);
     if (yaReembolsadoTotal + totalReembolso > venta.total) {
-      throw new Error(`El reembolso total excede lo cobrado. Cobrado: ${venta.total}, Ya reembolsado: ${yaReembolsadoTotal}, Esta devolución: ${totalReembolso}`);
+      throw Object.assign(new Error(`El reembolso total excede lo cobrado. Cobrado: ${venta.total}, Ya reembolsado: ${yaReembolsadoTotal}, Esta devolución: ${totalReembolso}`), { status: 400 });
     }
 
     if (metodoReembolso === "efectivo" && cajaActiva) {
@@ -401,7 +401,7 @@ router.post("/devoluciones", async (req, res): Promise<void> => {
       const efectivoDisponible = (aperturaActual?.fondo_inicial || 0) + efectivoCobradoCaja - efectivoReembolsadoCaja;
 
       if (totalReembolso > efectivoDisponible) {
-        throw new Error(`Efectivo insuficiente en caja. Disponible: ${efectivoDisponible}, Solicitado: ${totalReembolso}`);
+        throw Object.assign(new Error(`Efectivo insuficiente en caja. Disponible: ${efectivoDisponible}, Solicitado: ${totalReembolso}`), { status: 400 });
       }
     }
 
